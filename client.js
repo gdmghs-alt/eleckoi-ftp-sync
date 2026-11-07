@@ -346,6 +346,18 @@ window.__ModuleLoader__.load({
                 + '渲染出的 preset + 聊天附件与附件索引 + 图片资源 + 作者脚本。'),
               h('div', { style: styles.hint },
                 '设备私钥、服务器凭据、API key、插件配置、缓存与日志不在范围内。')),
+            status && status.layout ? h('div', { style: styles.card },
+              h('div', { style: styles.cardTitle }, '本机数据布局'),
+              h('div', { style: styles.hint },
+                '下面是把「同步范围」里每一项解到本机真实路径的结果。手机上路径和电脑不一样（没有 dsh-runtime 那一层），这里可以直接核对。'),
+              h('pre', { style: styles.pre },
+                `数据库  ${status.layout.dbExists ? '✓' : '✗'}  ${status.layout.db}` + '\n'
+                + (status.layout.dirs || []).map(item => `${item.exists ? '✓' : '✗'} ${item.rel}\n     → ${item.path}`).join('\n') + '\n'
+                + (status.layout.files || []).map(item => `${item.exists ? '✓' : '✗'} ${item.rel}\n     → ${item.path}`).join('\n')),
+              (status.layout.missing && status.layout.missing.length > 0)
+                ? h('div', { style: styles.hint }, `缺失：${status.layout.missing.join('、')}（这些目录本机没有，不会同步）`)
+                : null)
+              : null,
             note ? h('div', { style: styles.ok }, note) : null,
             error ? h('div', { style: styles.error }, error) : null,
             diag ? h('div', { style: styles.card },

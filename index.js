@@ -17,7 +17,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { detectAppRoot, diagnoseAppRoot, hasAppRootEvidence, planSync, scanLocal, summarize } from './lib/core.js'
+import { detectAppRoot, diagnoseAppRoot, hasAppRootEvidence, planSync, resolveLayout, scanLocal, summarize } from './lib/core.js'
 import { createDriver } from './lib/drivers.js'
 import { applyInPlace } from './lib/inline.js'
 
@@ -48,6 +48,24 @@ function describePlatform() {
 
 const ok = value => ({ ok: true, value })
 const fail = (code, message) => ({ ok: false, error: { code, message, details: {} } })
+
+/**
+ * 把「本机这份数据到底落在哪」摊成给人看的一行行。
+ *
+ * 手机端的目录布局和桌面完全不同（没有 dsh-runtime 那一层，库在 workspace/pc 里），
+ * 光看「找不到文件」没法判断是路径没解对还是真的没数据，所以一起返回给面板。
+ */
+async function describeLayout(root) {
+  if (!root) return null
+  const layout = await resolveLayout(root)
+  return {
+    db: layout.db.abs,
+    dbExists: layout.db.exists,
+    dirs: layout.dirs.map(item => ({ rel: item.rel, path: item.abs, exists: item.exists })),
+    files: layout.files.map(item => ({ rel: item.rel, path: item.abs, exists: item.exists })),
+    missing: layout.dirs.filter(item => !item.exists).map(item => item.rel),
+  }
+}
 
 function normalizeConfig(raw) {
   const config = raw && typeof raw === 'object' ? raw : {}
@@ -171,6 +189,7 @@ export function apply(ctx, rawConfig) {
       return ok({
         ...describeConfig(config, root),
         ...describePlatform(),
+        layout: await describeLayout(root),
         guardianRunning: alive,
         phase: alive ? state.phase ?? 'waiting-exit' : state.phase ?? 'idle',
         last: state.result ?? null,
@@ -251,6 +270,7 @@ export function apply(ctx, rawConfig) {
           ...summarize(planSync(local, remote.files, config.toleranceMs)),
           remoteHasManifest: remote.hasManifest === true,
           target: describeConfig(config, root).target,
+          layout: await describeLayout(root),
         })
       } finally {
         await driver.close().catch(() => {})

@@ -76,9 +76,11 @@ FTP 地址 / 端口 / 账号 / 密码 / 远端目录都能在面板里改，保�
 |---|---|---|
 | 「同步并重启」 | 可用：守护进程等你关程序 | 不可用，按了会报 `guardian-unsupported` |
 | 「立即同步」 | 可用，但数据库被占用时可能 EBUSY | **推荐**：就地替换，完了自己从后台划掉 App 再打开 |
-| appRoot 来源 | `%APPDATA%\eleckoi-desktop` | 按 `dsh-runtime` / 库文件特征自动探测 |
+| appRoot 来源 | `%APPDATA%\eleckoi-desktop` | 按 `dsh-runtime` / 库文件特征自动探测，认不出就靠诊断面板人工指定 |
 
 Android 是 unlink + rename：正在跑的进程继续握着旧 inode，所以替换完**必须**完全退出 App 再打开，新数据才会被读到。界面会用 `needsRestart` 告诉你这一条。
+
+**两端目录布局不一样也没关系**：同步范围里的每一项都用固定的逻辑名做键（`dsh-runtime/sessions/…`、`media/…`、`eleckoi-common.sqlite3`），实际路径每次在本机现解。桌面对上 `dsh-runtime/sessions`，Android 对上的可能是 `<data>/no_backup/runtime/data/sessions` —— 键一样就算同一个文件，照常双向比时间。面板里「本机数据布局」那块会把每一项解到哪条路径、缺哪一项全列出来。
 
 ### 找不到数据目录怎么办
 
@@ -128,6 +130,7 @@ Android 是 unlink + rename：正在跑的进程继续握着旧 inode，所以�
 - **两条执行通道**：`start` 走守护进程（等宿主退出后再替换，最干净），`sync` 走进程内就地搬运。后者是为 Android 独立 App 准备的 —— 那边 `spawn` 起不了子进程，也没有「退出后重新拉起」，点「同步并重启」什么都不会发生。`lib/inline.js` 与 `lib/guardian.js` 共用 `lib/core.js` 的比对和备份逻辑，差别只在「谁来搬」。
 - **appRoot 自动探测**：`detectAppRoot()` 不盲目相信环境变量（DSH 自己的进程里 `DSH_HOME=~/.dsh`，往上跳两层会落到用户主目录），而是拿候选目录去验证「里面有 `dsh-runtime` 或 `eleckoi-common.sqlite3`」，不成立就换下一个，最后才从 `APPDATA` / `HOME` 的已知落点里找。候选来源包括宿主注入的一整组变量（`DSH_HOME` / `DSH_SESSION_ROOT` / `ELECKOI_SESSION_SNAPSHOT_ROOT` / `ELECKOI_PRESET_ROOT` / `ELECKOI_DATABASE_PATH` / `ELECKOI_MEDIA_ROOT` …），各自按已知层级往上跳；还不行就从 `HOME` / `APPDATA` / `cwd` 往下做一次三层广度扫描。
 - **探测失败可以手动兜底**：前端把目录存在 `localStorage`，每个 RPC 请求带一个 `appRootHint`；host 用 `hasAppRootEvidence()` 校验后才认。这样即使自动探测全落空，面板本身还能用（不然连配置都存不下来 —— 配置文件就在 `appRoot` 里）。
+- **布局自适应**：`resolveLayout()` 把「逻辑名 → 本机真实路径」现解一遍。每个逻辑名给一串候选（appRoot 内的桌面式路径 → 往上 1~3 层的 Android 式路径 → 宿主注入的环境变量），取第一个真实存在的；数据库除了固定位置外，最后还会在 appRoot 里找任意 `*.sqlite3`。候选顺序是「appRoot 内优先、环境变量最后」—— 反过来会出事：在 DSH 自己的进程里 `DSH_HOME` 指向它自己的 home，先信它就会把那下面的 `attachments` 当聊天附件扫进去（实测文件数从 75 涨到 443）。
 
 ---
 
