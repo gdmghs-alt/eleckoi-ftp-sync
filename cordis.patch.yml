@@ -1,0 +1,21 @@
+# eleckoi-ftp-sync bundle patch —— 只挂自己这一行。
+#
+# 面板里可以直接改 FTP 地址/端口/账号/密码/远端目录，保存后写到
+# <appRoot>/eleckoi-sync/config.json，比这里的值优先；所以日常不用改这个文件。
+#
+# 这里的值只是首次打开面板时的默认值。
+# driver: ftp 用真实服务器；local 用本地目录模拟（调试用）。
+- insert:
+    - id: eleckoi-ftp-sync
+      name: 'eleckoi-ftp-sync'
+      config:
+        driver: ftp
+        localRemoteRoot: ''
+        ftp:
+          host: ''
+          port: 21
+          user: 'anonymous'
+          password: ''
+          remoteRoot: '/eleckoi'
+        appRoot: ''
+        toleranceMs: 2000

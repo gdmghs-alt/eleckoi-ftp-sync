@@ -1,0 +1,286 @@
+/**
+ * Client 半：把「FTP 数据同步」做成最左侧导航栏（sidebar.panellist）里的一个图标入口，
+ * 点开后是主区域（main slot / key = ftp-sync）里的整页面板。
+ * 面板里可以直接填 FTP 地址/端口/账号/密码/远端目录，保存后会写到
+ * <appRoot>/eleckoi-sync/config.json，不需要改 profile 配置。
+ */
+window.__ModuleLoader__.load({
+  id: 'eleckoi-ftp-sync',
+  factory(require) {
+    const React = require('react')
+    const h = React.createElement
+    const CHANNEL = '/eleckoi-ftp-sync'
+    const PANEL_ID = 'ftp-sync'
+
+    const styles = {
+      page: {
+        display: 'flex', flexDirection: 'column', gap: 0, height: '100%', minHeight: 0,
+        overflow: 'auto', padding: '22px 26px 34px', boxSizing: 'border-box',
+        color: 'var(--primary-text, #e8eef2)', fontSize: 13, lineHeight: 1.6,
+      },
+      header: { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 },
+      title: { fontSize: 17, fontWeight: 600, margin: 0 },
+      card: {
+        marginTop: 14, padding: '14px 16px', borderRadius: 14,
+        border: '1px solid var(--border, rgba(255,255,255,.14))',
+        background: 'var(--card, rgba(255,255,255,.035))',
+        maxWidth: 620,
+      },
+      cardTitle: { fontWeight: 600, marginBottom: 8, fontSize: 13 },
+      row: { display: 'flex', justifyContent: 'space-between', gap: 12, margin: '3px 0' },
+      label: { color: 'var(--tertiary-text, #93a3ae)' },
+      mono: { fontFamily: 'ui-monospace, Menlo, Consolas, monospace', fontSize: 12 },
+      field: { display: 'grid', gridTemplateColumns: '82px 1fr', alignItems: 'center', gap: 8, margin: '6px 0' },
+      input: {
+        width: '100%', padding: '6px 8px', borderRadius: 8,
+        border: '1px solid var(--border, rgba(255,255,255,.18))',
+        background: 'var(--input, rgba(0,0,0,.28))',
+        color: 'inherit', fontSize: 12, boxSizing: 'border-box',
+      },
+      button: {
+        padding: '7px 12px', borderRadius: 9,
+        border: '1px solid var(--border, rgba(255,255,255,.18))',
+        background: 'var(--button, rgba(255,255,255,.06))',
+        color: 'inherit', fontSize: 12, cursor: 'pointer',
+      },
+      primary: {
+        padding: '7px 14px', borderRadius: 9, border: '1px solid rgba(120,220,180,.5)',
+        background: 'rgba(80,200,150,.18)', color: '#b8f0d8', fontSize: 12,
+        cursor: 'pointer', fontWeight: 600,
+      },
+      actions: { display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' },
+      error: { color: '#ff9c8a', marginTop: 10, whiteSpace: 'pre-wrap' },
+      ok: { color: '#b8f0d8', marginTop: 10, whiteSpace: 'pre-wrap' },
+      hint: { color: 'var(--tertiary-text, #93a3ae)', fontSize: 11.5, marginTop: 8, maxWidth: 620 },
+      pre: {
+        marginTop: 10, padding: 10, borderRadius: 10, background: 'rgba(0,0,0,.32)',
+        color: '#c8d4dc', fontSize: 11, maxHeight: 260, overflow: 'auto', whiteSpace: 'pre-wrap',
+        maxWidth: 620,
+      },
+      badge: {
+        display: 'inline-block', padding: '1px 8px', borderRadius: 999, fontSize: 11,
+        border: '1px solid var(--border, rgba(255,255,255,.18))',
+      },
+    }
+
+    /** 侧栏图标：两个绕行的循环箭头。 */
+    function SyncNavIcon({ size = 24 }) {
+      return h('svg', {
+        width: size, height: size, viewBox: '0 0 24 24', fill: 'none',
+        stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round',
+        'aria-hidden': true,
+      },
+        h('path', { d: 'M20.4 12a8.4 8.4 0 0 1-14.2 6.1' }),
+        h('path', { d: 'M3.6 12a8.4 8.4 0 0 1 14.2-6.1' }),
+        h('path', { d: 'M17.8 2.6v3.9h-3.9' }),
+        h('path', { d: 'M6.2 21.4v-3.9h3.9' })
+      )
+    }
+
+    return {
+      inject: ['slots', 'connection'],
+      apply(ctx) {
+        const call = async (endpoint, payload) => {
+          const raw = await ctx.connection.rpc.call(CHANNEL, endpoint, payload ?? {})
+          const result = typeof raw === 'string' ? JSON.parse(raw) : raw
+          if (!result || result.ok !== true) {
+            throw new Error(result && result.error ? result.error.message : '同步通道调用失败')
+          }
+          return result.value
+        }
+
+        function SyncPage() {
+          const [status, setStatus] = React.useState(null)
+          const [plan, setPlan] = React.useState(null)
+          const [busy, setBusy] = React.useState(false)
+          const [error, setError] = React.useState(null)
+          const [note, setNote] = React.useState('')
+          const [logText, setLogText] = React.useState('')
+          const [form, setForm] = React.useState(null)
+
+          const run = async task => {
+            setBusy(true)
+            setError(null)
+            try {
+              await task()
+            } catch (reason) {
+              setError(reason instanceof Error ? reason.message : String(reason))
+            } finally {
+              setBusy(false)
+            }
+          }
+
+          React.useEffect(() => {
+            call('status').then(setStatus).catch(() => {})
+            call('config.get').then(setForm).catch(() => {})
+            const timer = setInterval(() => {
+              call('status').then(setStatus).catch(() => {})
+            }, 5000)
+            return () => clearInterval(timer)
+          }, [])
+
+          const refresh = () => run(async () => setStatus(await call('status')))
+          const patch = (key, value) => setForm(current => ({ ...current, [key]: value }))
+          const patchFtp = (key, value) => setForm(current => ({ ...current, ftp: { ...current.ftp, [key]: value } }))
+
+          const doSave = () => run(async () => {
+            if (form === null) return
+            const saved = await call('config.save', {
+              driver: form.driver,
+              localRemoteRoot: form.localRemoteRoot,
+              ftp: form.ftp,
+              toleranceMs: Number(form.toleranceMs) || 2000,
+            })
+            setNote(`已保存：${saved.target}`)
+            setStatus(await call('status'))
+          })
+
+          const doTest = () => run(async () => {
+            const result = await call('test')
+            setNote(`连接成功：${result.target}，远端 ${result.entries} 个文件${result.hasManifest ? '（有 manifest）' : ''}`)
+          })
+
+          const doPlan = () => run(async () => {
+            setPlan(await call('plan'))
+            setNote('')
+          })
+
+          const doStart = () => run(async () => {
+            const result = await call('start')
+            setNote(result && result.hint ? result.hint : '已启动')
+            setStatus(await call('status'))
+          })
+
+          const doCancel = () => run(async () => {
+            await call('cancel')
+            setNote('已取消')
+            setStatus(await call('status'))
+          })
+
+          const doLog = () => run(async () => {
+            const result = await call('log')
+            setLogText(result && result.text ? result.text : '（还没有日志）')
+          })
+
+          const running = Boolean(status && status.guardianRunning === true)
+
+          const field = (label, input) => h('label', { style: styles.field },
+            h('span', { style: styles.label }, label), input)
+
+          return h('div', { style: styles.page },
+            h('div', { style: styles.header },
+              h('span', { style: { display: 'inline-flex', width: 24, height: 24, color: 'var(--blue, #5aa9ff)' } },
+                h(SyncNavIcon, { size: 24 })),
+              h('h1', { style: styles.title }, 'FTP 数据同步')),
+
+            h('div', { style: styles.card },
+              h('div', { style: styles.row },
+                h('span', { style: styles.label }, '状态'),
+                h('span', null, running ? `等待退出（${status.phase}）` : (status ? status.phase : '读取中…'))),
+              h('div', { style: styles.row },
+                h('span', { style: styles.label }, '同步目标'),
+                h('span', { style: styles.mono }, status ? status.target : '—')),
+              h('div', { style: styles.row },
+                h('span', { style: styles.label }, '配置'),
+                h('span', null, status ? (status.configured ? '已填写' : '未填写') : '—')),
+              status && status.last
+                ? h('div', { style: styles.row },
+                  h('span', { style: styles.label }, '上次结果'),
+                  h('span', null, status.last.error
+                    ? `失败：${status.last.error}`
+                    : `上传 ${status.last.uploaded} · 下载 ${status.last.downloaded}`))
+                : null),
+
+            h('div', { style: styles.card },
+              h('div', { style: styles.cardTitle }, '同步目标'),
+              form === null
+                ? h('div', { style: styles.hint }, '读取配置中…')
+                : h(React.Fragment, null,
+                  field('方式', h('select', {
+                    style: styles.input, value: form.driver,
+                    onChange: event => patch('driver', event.target.value),
+                  },
+                  h('option', { value: 'ftp' }, 'FTP 服务器'),
+                  h('option', { value: 'local' }, '本地目录'))),
+                  form.driver === 'ftp'
+                    ? h(React.Fragment, null,
+                      field('地址', h('input', {
+                        style: styles.input, value: form.ftp.host, placeholder: 'ftp.example.com',
+                        onChange: event => patchFtp('host', event.target.value),
+                      })),
+                      field('端口', h('input', {
+                        style: styles.input, type: 'number', value: String(form.ftp.port),
+                        onChange: event => patchFtp('port', Number(event.target.value) || 21),
+                      })),
+                      field('用户名', h('input', {
+                        style: styles.input, value: form.ftp.user, placeholder: 'anonymous',
+                        onChange: event => patchFtp('user', event.target.value),
+                      })),
+                      field('密码', h('input', {
+                        style: styles.input, type: 'password', value: form.ftp.password,
+                        onChange: event => patchFtp('password', event.target.value),
+                      })),
+                      field('远端目录', h('input', {
+                        style: styles.input, value: form.ftp.remoteRoot, placeholder: '/eleckoi',
+                        onChange: event => patchFtp('remoteRoot', event.target.value),
+                      })))
+                    : field('本地目录', h('input', {
+                      style: styles.input, value: form.localRemoteRoot,
+                      onChange: event => patch('localRemoteRoot', event.target.value),
+                    })),
+                  h('div', { style: styles.actions },
+                    h('button', { type: 'button', style: styles.primary, disabled: busy, onClick: doSave }, '保存设置'),
+                    h('button', { type: 'button', style: styles.button, disabled: busy, onClick: doTest }, '测试连接')))),
+
+            plan
+              ? h('div', { style: styles.card },
+                h('div', { style: styles.cardTitle }, '差异'),
+                h('div', { style: styles.row },
+                  h('span', { style: styles.label }, '需要上传'),
+                  h('span', null, `${plan.uploadCount} 个 / ${Math.round(plan.uploadBytes / 1024)} KB`)),
+                h('div', { style: styles.row },
+                  h('span', { style: styles.label }, '需要下载'),
+                  h('span', null, `${plan.downloadCount} 个 / ${Math.round(plan.downloadBytes / 1024)} KB`)),
+                h('div', { style: styles.row },
+                  h('span', { style: styles.label }, '已一致'),
+                  h('span', null, `${plan.skippedCount} 个`)),
+                plan.conflictCount > 0
+                  ? h('div', { style: { ...styles.row, color: '#ffb46a' } },
+                    h('span', { style: styles.label }, '冲突'),
+                    h('span', null, `${plan.conflictCount} 个（会阻止执行）`))
+                  : null)
+              : null,
+
+            h('div', { style: styles.actions },
+              h('button', { type: 'button', style: styles.button, disabled: busy, onClick: doPlan }, '检查差异'),
+              h('button', { type: 'button', style: styles.primary, disabled: busy || running, onClick: doStart }, '同步并重启'),
+              running ? h('button', { type: 'button', style: styles.button, disabled: busy, onClick: doCancel }, '取消') : null,
+              h('button', { type: 'button', style: styles.button, disabled: busy, onClick: doLog }, '看日志'),
+              h('button', { type: 'button', style: styles.button, disabled: busy, onClick: refresh }, '刷新状态')),
+
+            h('div', { style: styles.hint },
+              '点「同步并重启」后请关闭 ElecKoi：守护进程会等它退出，备份、双向替换，然后重新打开程序。'),
+            note ? h('div', { style: styles.ok }, note) : null,
+            error ? h('div', { style: styles.error }, error) : null,
+            logText ? h('pre', { style: styles.pre }, logText) : null)
+        }
+
+        // 1) 主导航栏入口：只有 main 里存在同 key 的主页面时才会显示。
+        ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+          name: 'sidebar.panellist',
+          id: PANEL_ID,
+          order: 30,
+          label: 'FTP 同步',
+          registrant: 'eleckoi-ftp-sync',
+        }, ({ size }) => h(SyncNavIcon, { size })))
+
+        // 2) 对应的主页面。
+        ctx.slots.inject('main', () => ctx.slots.register({
+          name: 'main',
+          key: PANEL_ID,
+          registrant: 'eleckoi-ftp-sync',
+        }, () => h(SyncPage)))
+      },
+    }
+  },
+})

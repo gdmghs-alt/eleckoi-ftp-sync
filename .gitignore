@@ -1,0 +1,30 @@
+# 依赖与构建产物
+node_modules/
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+
+# 插件运行时状态（含 FTP 凭据，绝对不能提交）
+eleckoi-sync/
+config.json
+state.json
+jobs/
+logs/
+backups/
+
+# 本地测试数据
+ftp-mock/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 张量 / 临时文件
+*.log
+*.tmp
+*.bak
+*.bak-*

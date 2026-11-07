@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "FTP Data Sync",
+    "description": "Two-way sync between this machine's ElecKoi data and an FTP folder by file timestamp; applies after ElecKoi closes and relaunches it."
+  }
+}

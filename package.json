@@ -1,0 +1,42 @@
+{
+  "name": "eleckoi-ftp-sync",
+  "version": "0.1.2",
+  "type": "module",
+  "description": "ElecKoi 数据 FTP 双向同步：按文件时间比对，关闭程序后自动应用并重启。",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "lib/*.js",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "dependencies": {},
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  },
+  "license": "MIT",
+  "keywords": [
+    "eleckoi",
+    "dsh",
+    "dsh-plugin",
+    "ftp",
+    "sync",
+    "backup"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}
