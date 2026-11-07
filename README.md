@@ -8,14 +8,23 @@ ElecKoi（DeepSeek Harness 桌面端）插件：把宿主机数据目录与 FTP 
 
 ## 它同步什么
 
-| 同步 | 路径（相对 `appRoot`，即 `%APPDATA%\eleckoi-desktop`） |
-|---|---|
-| ✅ | `eleckoi-common.sqlite3` |
-| ✅ | `dsh-runtime/sessions` |
-| ✅ | `dsh-runtime/home/attachments` |
-| ✅ | `media` |
-| ✅ | `author-scripts` |
-| ❌ | 缓存、`logs`、`node_modules`、`.plugin-manager`、`*-wal`、`*-shm`、`*.bak-*` |
+| 同步 | 路径（相对 `appRoot`，即 `%APPDATA%\eleckoi-desktop`） | 是什么 |
+|---|---|---|
+| ✅ | `eleckoi-common.sqlite3` | 角色卡、世界书、**Agent 预设**（`agent_preset_*` 表）、会话元数据 |
+| ✅ | `dsh-runtime/sessions` | 对话正文 `session.v4.jsonl` |
+| ✅ | `dsh-runtime/session-snapshots` | 每个会话挂的预设、模型、推理档位、禁用的工具组 |
+| ✅ | `dsh-runtime/generated-presets` | 由预设表渲染出的 `preset.json` |
+| ✅ | `dsh-runtime/home/attachments` | 聊天里贴的附件正文 |
+| ✅ | `dsh-runtime/home/llm-deepseek` | 附件索引 `files-v3.json`，`fileId` ↔ sha256 映射 |
+| ✅ | `media` | 图片资源 |
+| ✅ | `author-scripts` | 作者脚本 |
+| ❌ | 缓存、`logs`、`node_modules`、`.plugin-manager`、`*-wal`、`*-shm`、`*.bak-*` | |
+| ❌ | `dsh-runtime/home/remote`、`.credentials.yaml`、`profiles` | 设备私钥、服务器凭据、API key、本机插件路径 |
+
+关于 Agent 预设：**预设本体就在 `eleckoi-common.sqlite3` 里**（`agent_presets` / `agent_preset_versions` / `agent_preset_contents` / `agent_preset_entries` / `agent_preset_groups` / `agent_preset_state`），跟着数据库一起走。
+
+但只同步数据库是不够的：`session-snapshots` 记录「这个会话当时挂的是哪个预设、哪个模型」，少了它换机器打开旧对话会静默回落到默认预设。
+`generated-presets` 是从预设表渲染出来的产物，属于派生物，缺了下次创建会话会自动重建；一起带上只是让远端立刻有一份可读的预设定义。
 
 远端真值不是 FTP 的 mtime（FTP 的 `MDTM` 精度和时区都不可靠），而是远端一份 manifest：
 

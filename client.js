@@ -260,6 +260,14 @@ window.__ModuleLoader__.load({
 
             h('div', { style: styles.hint },
               '点「同步并重启」后请关闭 ElecKoi：守护进程会等它退出，备份、双向替换，然后重新打开程序。'),
+
+            h('div', { style: styles.card },
+              h('div', { style: styles.cardTitle }, '同步范围'),
+              h('div', { style: styles.hint },
+                '数据库（角色卡、世界书、Agent 预设）+ 对话正文 + 会话快照（每个对话挂的预设与模型）+ '
+                + '渲染出的 preset + 聊天附件与附件索引 + 图片资源 + 作者脚本。'),
+              h('div', { style: styles.hint },
+                '设备私钥、服务器凭据、API key、插件配置、缓存与日志不在范围内。')),
             note ? h('div', { style: styles.ok }, note) : null,
             error ? h('div', { style: styles.error }, error) : null,
             logText ? h('pre', { style: styles.pre }, logText) : null)
