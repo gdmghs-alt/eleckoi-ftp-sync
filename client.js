@@ -80,8 +80,30 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots', 'connection'],
       apply(ctx) {
+        const ROOT_HINT_KEY = 'eleckoi-ftp-sync.appRootHint'
+
+        /** 手动指定的数据目录。手机端自动探测不出来时靠它，存在浏览器侧。 */
+        const readRootHint = () => {
+          try {
+            return window.localStorage.getItem(ROOT_HINT_KEY) || ''
+          } catch {
+            return ''
+          }
+        }
+        const writeRootHint = value => {
+          try {
+            if (value) window.localStorage.setItem(ROOT_HINT_KEY, value)
+            else window.localStorage.removeItem(ROOT_HINT_KEY)
+          } catch {
+            // 隐私模式下写不了，就只在本次会话里生效
+          }
+        }
+
         const call = async (endpoint, payload) => {
-          const raw = await ctx.connection.rpc.call(CHANNEL, endpoint, payload ?? {})
+          const hint = readRootHint()
+          const body = { ...(payload ?? {}) }
+          if (hint) body.appRootHint = hint
+          const raw = await ctx.connection.rpc.call(CHANNEL, endpoint, body)
           const result = typeof raw === 'string' ? JSON.parse(raw) : raw
           if (!result || result.ok !== true) {
             throw new Error(result && result.error ? result.error.message : '同步通道调用失败')
@@ -96,6 +118,8 @@ window.__ModuleLoader__.load({
           const [error, setError] = React.useState(null)
           const [note, setNote] = React.useState('')
           const [logText, setLogText] = React.useState('')
+          const [diag, setDiag] = React.useState(null)
+          const [rootHint, setRootHint] = React.useState(() => readRootHint())
           const [form, setForm] = React.useState(null)
 
           const run = async task => {
@@ -165,9 +189,31 @@ window.__ModuleLoader__.load({
             setStatus(await call('status'))
           })
 
+          // 诊断：把 appRoot 推导过程摊出来。手机端找不到数据目录时靠这个自报。
+          const doDiagnose = () => run(async () => {
+            const report = await call('diagnose')
+            setDiag(report)
+            setNote(report && report.resolved ? `数据目录：${report.resolved}` : '没找到数据目录，把下面的内容发出来')
+          })
+
           const doLog = () => run(async () => {
             const result = await call('log')
             setLogText(result && result.text ? result.text : '（还没有日志）')
+          })
+
+          // 手动指定数据目录：写进浏览器本地，之后每个请求都带上，host 侧校验通过才认。
+          const doSetRoot = () => run(async () => {
+            const value = rootHint.trim()
+            writeRootHint(value)
+            const report = await call('diagnose')
+            if (report && report.resolved) {
+              setNote(`数据目录已设为：${report.resolved}`)
+              setStatus(await call('status'))
+              setForm(await call('config.get'))
+            } else {
+              setNote('这个目录不像 ElecKoi 的数据目录（里面没有 dsh-runtime 或数据库文件）')
+            }
+            setDiag(report)
           })
 
           const running = Boolean(status && status.guardianRunning === true)
@@ -265,11 +311,28 @@ window.__ModuleLoader__.load({
               h('button', { type: 'button', style: styles.primary, disabled: busy || running, onClick: () => doSync('both') }, '立即同步（不重启）'),
               running ? h('button', { type: 'button', style: styles.button, disabled: busy, onClick: doCancel }, '取消') : null,
               h('button', { type: 'button', style: styles.button, disabled: busy, onClick: doLog }, '看日志'),
+              h('button', { type: 'button', style: styles.button, disabled: busy, onClick: doDiagnose }, '诊断环境'),
               h('button', { type: 'button', style: styles.button, disabled: busy, onClick: refresh }, '刷新状态')),
 
             h('div', { style: styles.actions },
               h('button', { type: 'button', style: styles.button, disabled: busy, onClick: () => doSync('download') }, '只从 FTP 下载'),
               h('button', { type: 'button', style: styles.button, disabled: busy, onClick: () => doSync('upload') }, '只上传到 FTP')),
+
+            h('div', { style: styles.card },
+              h('div', { style: styles.cardTitle }, '数据目录'),
+              h('div', { style: styles.hint },
+                '一般不用填。手机端如果报「找不到 ElecKoi 数据目录」，点「诊断环境」看候选路径，'
+                + '把其中真实的那个（含 dsh-runtime 的那一层）填到这里。'),
+              field('目录', h('input', {
+                style: styles.input, value: rootHint, placeholder: '/data/user/0/<包名>/files/eleckoi-desktop',
+                onChange: event => setRootHint(event.target.value),
+              })),
+              h('div', { style: styles.actions },
+                h('button', { type: 'button', style: styles.primary, disabled: busy, onClick: doSetRoot }, '使用这个目录'),
+                h('button', {
+                  type: 'button', style: styles.button, disabled: busy,
+                  onClick: () => { setRootHint(''); writeRootHint(''); setNote('已清空手动目录，下次请求重新自动探测') },
+                }, '清空'))),
 
             h('div', { style: styles.hint },
               '「同步并重启」只在电脑上有效：守护进程会等你关闭 ElecKoi，备份、双向替换，然后重新打开程序。'),
@@ -285,6 +348,29 @@ window.__ModuleLoader__.load({
                 '设备私钥、服务器凭据、API key、插件配置、缓存与日志不在范围内。')),
             note ? h('div', { style: styles.ok }, note) : null,
             error ? h('div', { style: styles.error }, error) : null,
+            diag ? h('div', { style: styles.card },
+              h('div', { style: styles.cardTitle }, '环境诊断'),
+              h('div', { style: styles.row },
+                h('span', { style: styles.label }, '数据目录'),
+                h('span', { style: styles.mono }, diag.resolved || '未找到')),
+              h('div', { style: styles.row },
+                h('span', { style: styles.label }, '平台'),
+                h('span', { style: styles.mono }, `${diag.platform}/${diag.arch}`)),
+              h('div', { style: styles.row },
+                h('span', { style: styles.label }, '运行方式'),
+                h('span', null, diag.isPackagedElectron ? 'Electron 应用内' : '纯 node')),
+              h('div', { style: styles.hint }, '命中的候选路径：'),
+              h('pre', { style: styles.pre },
+                diag.candidates.filter(item => item.evidence.length > 0)
+                  .map(item => `✓ ${item.path}  ← ${item.from}  [${item.evidence.join(', ')}]`)
+                  .join('\n') || '（没有任何候选命中）'),
+              h('div', { style: styles.hint }, '环境变量：'),
+              h('pre', { style: styles.pre },
+                Object.keys(diag.env).map(key => `${key} = ${diag.env[key] === null ? '（未设置）' : diag.env[key]}`).join('\n')),
+              h('div', { style: styles.hint }, '全部候选（含未命中）：'),
+              h('pre', { style: styles.pre },
+                diag.candidates.map(item => `${item.evidence.length > 0 ? '✓' : '·'} ${item.path}  ← ${item.from}`).join('\n')))
+              : null,
             logText ? h('pre', { style: styles.pre }, logText) : null)
         }
 

@@ -64,6 +64,7 @@ ElecKoi（DeepSeek Harness 桌面端）插件：把宿主机数据目录与 FTP 
 - **取消** —— 撤掉等待中的守护进程
 - **看日志** —— 读最近一次同步的完整日志
 - **刷新状态** —— 手动拉一次 `status`
+- **诊断环境** —— 把 `appRoot` 的推导过程摊开（候选路径、环境变量、命中证据），手机端找不到数据目录时靠它
 
 FTP 地址 / 端口 / 账号 / 密码 / 远端目录都能在面板里改，保存后写到 `<appRoot>/eleckoi-sync/config.json`，比 `cordis.patch.yml` 里的默认值优先。
 
@@ -78,6 +79,16 @@ FTP 地址 / 端口 / 账号 / 密码 / 远端目录都能在面板里改，保�
 | appRoot 来源 | `%APPDATA%\eleckoi-desktop` | 按 `dsh-runtime` / 库文件特征自动探测 |
 
 Android 是 unlink + rename：正在跑的进程继续握着旧 inode，所以替换完**必须**完全退出 App 再打开，新数据才会被读到。界面会用 `needsRestart` 告诉你这一条。
+
+### 找不到数据目录怎么办
+
+面板报「找不到 ElecKoi 数据目录」，说明自动探测没认出 `appRoot`（Android 上尤其常见，各家的私有目录布局不一样）。
+
+1. 点 **诊断环境**。它会列出：最终认到的目录、平台/架构、是否跑在 Electron 里、所有参与推导的环境变量、所有候选路径（命中的前面打 `✓`，后面附上是靠哪个特征认出来的）。
+2. 在候选列表里找**含 `dsh-runtime` 的那一层**，填进「数据目录」输入框，点 **使用这个目录**。
+3. 这个值存在浏览器 `localStorage`，之后每次调用都会带上；host 侧会先验证「里面真有 `dsh-runtime` 或 `eleckoi-common.sqlite3`」才采纳，填错不会有副作用，点 **清空** 就回到自动探测。
+
+之所以把覆盖值放在前端而不是配置文件：配置文件本来就在 `appRoot` 里面，探测失败时恰好没有可写的地方。
 
 ---
 
@@ -111,7 +122,8 @@ Android 是 unlink + rename：正在跑的进程继续握着旧 inode，所以�
 - **导航项要能显示**：`sidebar.panellist` 里的项只有在 `main` slot 存在同 `key` 的页面时才渲染。所以本插件同时注册 `main` 的 `key: 'ftp-sync'` 页面 + `sidebar.panellist` 的 `id: 'ftp-sync'` 图标。
 - **服务端只读文件**：IIS 上文件一旦被标成只读，覆盖式 `STOR` 与 `DELE` 都回 `550 Access is denied`，而 `SITE ATTRIB` / `SITE CHMOD` 在 IIS 上是 `500 command not understood`。唯一还能做的是改名，所以上传被挡时用 `RNFR/RNTO` 把旧文件挪进 `.eleckoi-sync/trash/<时间戳>-<原名>`，腾出位置再传一次。只对「明确写了 Access is denied」的 550 这么做，目录不存在、磁盘满之类仍然照原样报错。
 - **两条执行通道**：`start` 走守护进程（等宿主退出后再替换，最干净），`sync` 走进程内就地搬运。后者是为 Android 独立 App 准备的 —— 那边 `spawn` 起不了子进程，也没有「退出后重新拉起」，点「同步并重启」什么都不会发生。`lib/inline.js` 与 `lib/guardian.js` 共用 `lib/core.js` 的比对和备份逻辑，差别只在「谁来搬」。
-- **appRoot 自动探测**：`detectAppRoot()` 不盲目相信环境变量（DSH 自己的进程里 `DSH_HOME=~/.dsh`，往上跳两层会落到用户主目录），而是拿候选目录去验证「里面有 `dsh-runtime` 或 `eleckoi-common.sqlite3`」，不成立就换下一个，最后才从 `APPDATA` / `HOME` 的已知落点里找。
+- **appRoot 自动探测**：`detectAppRoot()` 不盲目相信环境变量（DSH 自己的进程里 `DSH_HOME=~/.dsh`，往上跳两层会落到用户主目录），而是拿候选目录去验证「里面有 `dsh-runtime` 或 `eleckoi-common.sqlite3`」，不成立就换下一个，最后才从 `APPDATA` / `HOME` 的已知落点里找。候选来源包括宿主注入的一整组变量（`DSH_HOME` / `DSH_SESSION_ROOT` / `ELECKOI_SESSION_SNAPSHOT_ROOT` / `ELECKOI_PRESET_ROOT` / `ELECKOI_DATABASE_PATH` / `ELECKOI_MEDIA_ROOT` …），各自按已知层级往上跳；还不行就从 `HOME` / `APPDATA` / `cwd` 往下做一次三层广度扫描。
+- **探测失败可以手动兜底**：前端把目录存在 `localStorage`，每个 RPC 请求带一个 `appRootHint`；host 用 `hasAppRootEvidence()` 校验后才认。这样即使自动探测全落空，面板本身还能用（不然连配置都存不下来 —— 配置文件就在 `appRoot` 里）。
 
 ---
 

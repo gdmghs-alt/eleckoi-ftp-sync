@@ -17,7 +17,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { detectAppRoot, planSync, scanLocal, summarize } from './lib/core.js'
+import { detectAppRoot, diagnoseAppRoot, hasAppRootEvidence, planSync, scanLocal, summarize } from './lib/core.js'
 import { createDriver } from './lib/drivers.js'
 import { applyInPlace } from './lib/inline.js'
 
@@ -100,6 +100,23 @@ export function apply(ctx, rawConfig) {
     return appRoot
   }
   const metaDirOf = root => (root ? path.join(root, 'eleckoi-sync') : undefined)
+
+  /**
+   * 允许前端把「你替我指定数据目录」传上来。
+   *
+   * 手机端如果自动探测失败，整页都用不了 —— 而这时又没有任何可写的地方去存
+   * 覆盖值（配置文件本来就在 appRoot 里）。所以覆盖值放在前端（localStorage），
+   * 每次调用带上来；这里只负责校验它确实像个数据目录，然后认下来。
+   */
+  const acceptRootHint = async hint => {
+    if (typeof hint !== 'string' || hint.trim() === '') return null
+    const candidate = path.resolve(hint.trim())
+    if (!(await hasAppRootEvidence(candidate))) return null
+    appRoot = candidate
+    appRootPromise = Promise.resolve(candidate)
+    return candidate
+  }
+
   /** 就地同步是单飞的：一个进程里同时跑两次会互相踩文件。 */
   let inlineRunning = false
 
@@ -178,7 +195,7 @@ export function apply(ctx, rawConfig) {
       const root = await ensureAppRoot()
       const dir = metaDirOf(root)
       const file = dir ? path.join(dir, 'config.json') : undefined
-      if (!file) return fail('app-root-unknown', '找不到 ElecKoi 数据目录，无法保存配置')
+      if (!file) return fail('app-root-unknown', '找不到 ElecKoi 数据目录，无法保存配置；点「诊断环境」把结果发出来')
       const next = normalizeConfig({ ...(payload ?? {}), appRoot: patchConfig.appRoot })
       await fsp.mkdir(path.dirname(file), { recursive: true })
       await fsp.writeFile(file, JSON.stringify({
@@ -188,6 +205,19 @@ export function apply(ctx, rawConfig) {
         toleranceMs: next.toleranceMs,
       }, null, 2), 'utf8')
       return ok({ saved: true, ...describeConfig(next, root) })
+    },
+
+    /**
+     * 环境诊断：把 appRoot 推导过程摊开。
+     *
+     * Android 独立 App 的数据目录布局和桌面不一样，插件猜不中时整页都不可用，
+     * 而这台机器上又没法远程看 —— 所以留一个端点，把变量、候选路径、命中证据
+     * 全吐出来，让用户复制回来即可。
+     */
+    async diagnose() {
+      const root = await ensureAppRoot()
+      const report = await diagnoseAppRoot(patchConfig, root ?? null)
+      return ok(report)
     },
 
     async test() {
@@ -406,6 +436,9 @@ export function apply(ctx, rawConfig) {
           result = fail('unknown-endpoint', `未知端点：${endpoint}`)
         } else {
           try {
+            // 前端可以在任意请求里带 appRootHint，指定「用它当数据目录」。
+            // 先认这个，再走自动探测 —— 手机端探测不出来时全靠它。
+            await acceptRootHint(message?.payload?.appRootHint)
             result = await handler(message?.payload)
           } catch (error) {
             result = fail('handler-failed', error instanceof Error ? error.message : String(error))
