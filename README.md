@@ -97,6 +97,7 @@ FTP 地址 / 端口 / 账号 / 密码 / 远端目录都能在面板里改，保�
 - **RPC 通道名必须以 `/` 开头**：DSH 的 `@deepseek-ai/dsh-client-connection` 里是 `const CHANNEL_PATTERN = /^\/[A-Za-z0-9._~-]+$/`，写 `eleckoi-ftp-sync` 会直接抛 `invalid or reserved RPC channel`，整个插件静默不激活。
 - **不用 `ctx.connection.rpc.handle`**：它的内部 effect 会在子作用域里访问 `owner.webServer`，触发 "without inject" 报错。改成自己 `webServer.register({ kind: 'prefix', path: CHANNEL, handler })`，手写 `POST <channel>/<endpoint>`，回 `{ type: 'server-response', rpcId, result }`，请求先过 `connection.requestRejection({ headers })`。
 - **导航项要能显示**：`sidebar.panellist` 里的项只有在 `main` slot 存在同 `key` 的页面时才渲染。所以本插件同时注册 `main` 的 `key: 'ftp-sync'` 页面 + `sidebar.panellist` 的 `id: 'ftp-sync'` 图标。
+- **服务端只读文件**：IIS 上文件一旦被标成只读，覆盖式 `STOR` 与 `DELE` 都回 `550 Access is denied`，而 `SITE ATTRIB` / `SITE CHMOD` 在 IIS 上是 `500 command not understood`。唯一还能做的是改名，所以上传被挡时用 `RNFR/RNTO` 把旧文件挪进 `.eleckoi-sync/trash/<时间戳>-<原名>`，腾出位置再传一次。只对「明确写了 Access is denied」的 550 这么做，目录不存在、磁盘满之类仍然照原样报错。
 
 ---
 
