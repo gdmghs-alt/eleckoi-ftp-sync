@@ -14,7 +14,7 @@
         ftp:
           host: ''
           port: 21
-          user: 'anonymous'
+          user: ''
           password: ''
           remoteRoot: '/eleckoi'
         appRoot: ''
