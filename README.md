@@ -67,6 +67,7 @@ ElecKoi（DeepSeek Harness 桌面端）插件：把宿主机数据目录与 FTP 
 - **刷新状态** —— 手动拉一次 `status`
 - **诊断环境** —— 把 `appRoot` 的推导过程摊开（候选路径、环境变量、命中证据），手机端找不到数据目录时靠它
 - **列出恢复点** / **预演** / **确认回滚** —— 把之前那份数据拿回来，见下一节
+- **修复会话重复** —— 清空本机会话区后从 FTP 重灌；界面报 duplicate JSONL session id 时点这个，见下下节
 
 FTP 地址 / 端口 / 账号 / 密码 / 远端目录都能在面板里改，保存后写到 `<appRoot>/eleckoi-sync/config.json`，比 `cordis.patch.yml` 里的默认值优先。
 
@@ -86,6 +87,20 @@ FTP 地址 / 端口 / 账号 / 密码 / 远端目录都能在面板里改，保�
 备份存的是**逻辑名**（`dsh-runtime/sessions/…`），但 `sessions` 底下那层仍是备份当时的真实项目目录名；回滚时先按逻辑名折成 `@self` 键，再用本机当前的布局落到该在的位置。所以跨设备、跨版本布局都能回滚对。
 
 如果本机**一个备份都没有**（手机上第一次装插件就是这种情况），用 **强制从 FTP 覆盖本机**：它跳过时间比对、只朝一个方向写，把远端那份整体盖上来。这条路的前提是远端那份是好的。
+
+### 界面报 duplicate JSONL session id
+
+报错原文：`failed to observe session "<id>": duplicate JSONL session id "<id>" appears in multiple project directories`。
+
+原因是同一个 sessionId 的 `session.v4.jsonl` 同时躺在两个项目目录里（`sessions/--D-...--/` 和 `sessions/--data-user-10-...--/` 这种）。DSH 的 `listArtifacts()` 会遍历所有项目目录、用 `Set` 断言 id 全局唯一，一撞就整份抛错 —— 那个会话一条 turn 都载不出来，界面只剩开场白。
+
+点 **修复会话重复**：把 `sessions/` 下所有项目目录整棵挪进 `<appRoot>/eleckoi-sync/quarantine/<时间戳>/`，再把远端那份拉回来。挪走不是删除，要捞回来还能从 quarantine 里取（面板「列出恢复点」能看到）。
+
+注意三点：
+
+- 这条等于**放弃本机现有会话分叉**，以远端为准。分叉里独有的内容会随旧目录一起进 quarantine，不会丢，但不会自动合并。
+- 拉回来的只有远端确实有的那几个。远端 `chat_sessions` 表里没登记的会话，就算 jsonl 在也不会出现在列表里 —— 那是数据库层面的缺口，同步器补不了。
+- 项目目录名是 cwd 的路径编码。Android 数据根从 `runtime/` 换成 `unified-runtime/` 时 cwd 会变，编码随之多出一个名字，旧名字里那份历史就变成了「第二个项目目录」。这是 duplicate 最常见的由来。v0.2.6 起 `pickSelfProject()` 不再单凭编码判定本机目录，而是拿数据库里 `chat_sessions` 的 id 给每个目录投票，编码结果只是候选之一。
 
 ### 桌面端 vs Android
 

@@ -345,6 +345,18 @@ window.__ModuleLoader__.load({
                 onClick: () => doSync('download', { forceDownload: true }),
               }, '强制从 FTP 覆盖本机')),
 
+            h('div', { style: styles.actions },
+              h('button', {
+                type: 'button', style: styles.danger || styles.button, disabled: busy || running,
+                onClick: () => doSync('download', { forceDownload: true, resetSessions: true }),
+              }, '修复会话重复（清空会话区后从 FTP 重灌）')),
+
+            h('div', { style: styles.hint },
+              '「修复会话重复」= 把本机 sessions 下所有项目目录整棵挪进 eleckoi-sync/quarantine/，'
+              + '再从 FTP 拉回来。会话正文报 duplicate JSONL session id 时点这个：'
+              + '同一场对话在两个项目目录里各有一份，DSH 会直接拒绝加载。'
+              + '挪走不是删除，要捞回来还能从 quarantine 里取。'),
+
             h('div', { style: styles.card },
               h('div', { style: styles.cardTitle }, '数据目录'),
               h('div', { style: styles.hint },
