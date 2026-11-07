@@ -151,6 +151,14 @@ window.__ModuleLoader__.load({
             setStatus(await call('status'))
           })
 
+          // 就地同步：手机上（spawn 不起守护进程）走这条。direction 决定只拉、只推还是双向。
+          const doSync = direction => run(async () => {
+            const result = await call('sync', { direction })
+            setNote(result && result.hint ? result.hint : '完成')
+            setPlan(null)
+            setStatus(await call('status'))
+          })
+
           const doCancel = () => run(async () => {
             await call('cancel')
             setNote('已取消')
@@ -254,12 +262,19 @@ window.__ModuleLoader__.load({
             h('div', { style: styles.actions },
               h('button', { type: 'button', style: styles.button, disabled: busy, onClick: doPlan }, '检查差异'),
               h('button', { type: 'button', style: styles.primary, disabled: busy || running, onClick: doStart }, '同步并重启'),
+              h('button', { type: 'button', style: styles.primary, disabled: busy || running, onClick: () => doSync('both') }, '立即同步（不重启）'),
               running ? h('button', { type: 'button', style: styles.button, disabled: busy, onClick: doCancel }, '取消') : null,
               h('button', { type: 'button', style: styles.button, disabled: busy, onClick: doLog }, '看日志'),
               h('button', { type: 'button', style: styles.button, disabled: busy, onClick: refresh }, '刷新状态')),
 
+            h('div', { style: styles.actions },
+              h('button', { type: 'button', style: styles.button, disabled: busy, onClick: () => doSync('download') }, '只从 FTP 下载'),
+              h('button', { type: 'button', style: styles.button, disabled: busy, onClick: () => doSync('upload') }, '只上传到 FTP')),
+
             h('div', { style: styles.hint },
-              '点「同步并重启」后请关闭 ElecKoi：守护进程会等它退出，备份、双向替换，然后重新打开程序。'),
+              '「同步并重启」只在电脑上有效：守护进程会等你关闭 ElecKoi，备份、双向替换，然后重新打开程序。'),
+            h('div', { style: styles.hint },
+              '手机上（独立 App）用「立即同步」：当场比对并替换文件，完成后自己从后台划掉 ElecKoi 再打开，新数据才会被读到。'),
 
             h('div', { style: styles.card },
               h('div', { style: styles.cardTitle }, '同步范围'),

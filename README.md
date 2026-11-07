@@ -58,7 +58,9 @@ ElecKoi（DeepSeek Harness 桌面端）插件：把宿主机数据目录与 FTP 
 重启后最左侧导航栏多一个图标（同步箭头），点开是整页面板：
 
 - **检查差异** —— 只比对不传输，告诉你会上传多少、下载多少、哪些冲突
-- **同步并重启** —— 写 job，拉起守护进程，然后你手动关掉 ElecKoi；守护进程接手
+- **同步并重启** —— 写 job，拉起守护进程，然后你手动关掉 ElecKoi；守护进程接手（仅桌面端）
+- **立即同步（不重启）** —— 不关程序，当场比对并替换文件；手机上必须用这条
+- **只从 FTP 下载** / **只上传到 FTP** —— 单向，不会反向覆盖
 - **取消** —— 撤掉等待中的守护进程
 - **看日志** —— 读最近一次同步的完整日志
 - **刷新状态** —— 手动拉一次 `status`
@@ -66,6 +68,16 @@ ElecKoi（DeepSeek Harness 桌面端）插件：把宿主机数据目录与 FTP 
 FTP 地址 / 端口 / 账号 / 密码 / 远端目录都能在面板里改，保存后写到 `<appRoot>/eleckoi-sync/config.json`，比 `cordis.patch.yml` 里的默认值优先。
 
 **建议先在面板里「检查差异」跑一遍**，看清楚方向和条数再点同步。
+
+### 桌面端 vs Android
+
+| | 桌面（Windows / macOS / Linux） | Android 独立 App |
+|---|---|---|
+| 「同步并重启」 | 可用：守护进程等你关程序 | 不可用，按了会报 `guardian-unsupported` |
+| 「立即同步」 | 可用，但数据库被占用时可能 EBUSY | **推荐**：就地替换，完了自己从后台划掉 App 再打开 |
+| appRoot 来源 | `%APPDATA%\eleckoi-desktop` | 按 `dsh-runtime` / 库文件特征自动探测 |
+
+Android 是 unlink + rename：正在跑的进程继续握着旧 inode，所以替换完**必须**完全退出 App 再打开，新数据才会被读到。界面会用 `needsRestart` 告诉你这一条。
 
 ---
 
@@ -98,6 +110,8 @@ FTP 地址 / 端口 / 账号 / 密码 / 远端目录都能在面板里改，保�
 - **不用 `ctx.connection.rpc.handle`**：它的内部 effect 会在子作用域里访问 `owner.webServer`，触发 "without inject" 报错。改成自己 `webServer.register({ kind: 'prefix', path: CHANNEL, handler })`，手写 `POST <channel>/<endpoint>`，回 `{ type: 'server-response', rpcId, result }`，请求先过 `connection.requestRejection({ headers })`。
 - **导航项要能显示**：`sidebar.panellist` 里的项只有在 `main` slot 存在同 `key` 的页面时才渲染。所以本插件同时注册 `main` 的 `key: 'ftp-sync'` 页面 + `sidebar.panellist` 的 `id: 'ftp-sync'` 图标。
 - **服务端只读文件**：IIS 上文件一旦被标成只读，覆盖式 `STOR` 与 `DELE` 都回 `550 Access is denied`，而 `SITE ATTRIB` / `SITE CHMOD` 在 IIS 上是 `500 command not understood`。唯一还能做的是改名，所以上传被挡时用 `RNFR/RNTO` 把旧文件挪进 `.eleckoi-sync/trash/<时间戳>-<原名>`，腾出位置再传一次。只对「明确写了 Access is denied」的 550 这么做，目录不存在、磁盘满之类仍然照原样报错。
+- **两条执行通道**：`start` 走守护进程（等宿主退出后再替换，最干净），`sync` 走进程内就地搬运。后者是为 Android 独立 App 准备的 —— 那边 `spawn` 起不了子进程，也没有「退出后重新拉起」，点「同步并重启」什么都不会发生。`lib/inline.js` 与 `lib/guardian.js` 共用 `lib/core.js` 的比对和备份逻辑，差别只在「谁来搬」。
+- **appRoot 自动探测**：`detectAppRoot()` 不盲目相信环境变量（DSH 自己的进程里 `DSH_HOME=~/.dsh`，往上跳两层会落到用户主目录），而是拿候选目录去验证「里面有 `dsh-runtime` 或 `eleckoi-common.sqlite3`」，不成立就换下一个，最后才从 `APPDATA` / `HOME` 的已知落点里找。
 
 ---
 
@@ -120,7 +134,7 @@ ftp:
 
 ## 免责
 
-同步会**覆盖文件**。面板里第一次点「同步并重启」之前，先「检查差异」。备份目录会保留，但它只备份被下载覆盖的那部分，不是全量快照。
+同步会**覆盖文件**。面板里第一次点「同步并重启」（或「立即同步」）之前，先「检查差异」。备份目录会保留，但它只备份被下载覆盖的那部分，不是全量快照。
 
 ## License
 
