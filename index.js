@@ -64,6 +64,9 @@ async function describeLayout(root) {
     dirs: layout.dirs.map(item => ({ rel: item.rel, path: item.abs, exists: item.exists })),
     files: layout.files.map(item => ({ rel: item.rel, path: item.abs, exists: item.exists })),
     missing: layout.dirs.filter(item => !item.exists).map(item => item.rel),
+    selfProject: layout.selfProject,
+    selfProjectConfident: layout.selfProjectConfident,
+    selfProjectReason: layout.selfProjectReason,
   }
 }
 
@@ -137,6 +140,9 @@ export function apply(ctx, rawConfig) {
 
   /** 就地同步是单飞的：一个进程里同时跑两次会互相踩文件。 */
   let inlineRunning = false
+  let inlineStartedAt = 0
+  /** 就地同步锁的最长持有时间；超时视为上一次已经挂死，允许重来。 */
+  const INLINE_LOCK_TIMEOUT_MS = 10 * 60 * 1000
 
   const readJson = async file => {
     if (!file) return {}
@@ -352,12 +358,24 @@ export function apply(ctx, rawConfig) {
       if (!describeConfig(config, root).configured) return fail('not-configured', '还没填同步目标')
       const state = await readState()
       if (guardianAlive(state.guardianPid)) return fail('already-running', '已经有一个同步在等待 ElecKoi 退出')
-      if (inlineRunning) return fail('already-running', '上一次就地同步还没结束')
+      /**
+       * 就地同步是单飞的，但锁不能是「一旦卡住就永远锁死」：
+       * 上一次如果因为网络挂死没返回，面板会一直报「上一次就地同步还没结束」，
+       * 用户除了杀进程没有别的出路。超过 10 分钟就当它已经死了，放行本次。
+       */
+      if (inlineRunning) {
+        const stuckFor = Date.now() - (inlineStartedAt ?? 0)
+        if (stuckFor < INLINE_LOCK_TIMEOUT_MS) {
+          return fail('already-running', `上一次就地同步还在跑（已 ${Math.round(stuckFor / 1000)} 秒），等一下再看`)
+        }
+        inlineRunning = false
+      }
 
       const direction = payload?.direction === 'download' || payload?.direction === 'upload' ? payload.direction : 'both'
       const stamp = Date.now()
       const logPath = path.join(metaDir, 'logs', `inline-${stamp}.log`)
       inlineRunning = true
+      inlineStartedAt = stamp
       try {
         const result = await applyInPlace({
           appRoot: root,

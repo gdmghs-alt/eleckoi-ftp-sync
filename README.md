@@ -77,6 +77,7 @@ FTP 地址 / 端口 / 账号 / 密码 / 远端目录都能在面板里改，保�
 | 「同步并重启」 | 可用：守护进程等你关程序 | 不可用，按了会报 `guardian-unsupported` |
 | 「立即同步」 | 可用，但数据库被占用时可能 EBUSY | **推荐**：就地替换，完了自己从后台划掉 App 再打开 |
 | appRoot 来源 | `%APPDATA%\eleckoi-desktop` | 按 `dsh-runtime` / 库文件特征自动探测，认不出就靠诊断面板人工指定 |
+| 会话目录 | `dsh-runtime/sessions/--D-...-workspace--/` | `…/no_backup/runtime/data/sessions/--data-user-10-…--/` —— 名字不同，但同步键统一成 `@self`，照常互通 |
 
 Android 是 unlink + rename：正在跑的进程继续握着旧 inode，所以替换完**必须**完全退出 App 再打开，新数据才会被读到。界面会用 `needsRestart` 告诉你这一条。
 
@@ -131,6 +132,11 @@ Android 是 unlink + rename：正在跑的进程继续握着旧 inode，所以�
 - **appRoot 自动探测**：`detectAppRoot()` 不盲目相信环境变量（DSH 自己的进程里 `DSH_HOME=~/.dsh`，往上跳两层会落到用户主目录），而是拿候选目录去验证「里面有 `dsh-runtime` 或 `eleckoi-common.sqlite3`」，不成立就换下一个，最后才从 `APPDATA` / `HOME` 的已知落点里找。候选来源包括宿主注入的一整组变量（`DSH_HOME` / `DSH_SESSION_ROOT` / `ELECKOI_SESSION_SNAPSHOT_ROOT` / `ELECKOI_PRESET_ROOT` / `ELECKOI_DATABASE_PATH` / `ELECKOI_MEDIA_ROOT` …），各自按已知层级往上跳；还不行就从 `HOME` / `APPDATA` / `cwd` 往下做一次三层广度扫描。
 - **探测失败可以手动兜底**：前端把目录存在 `localStorage`，每个 RPC 请求带一个 `appRootHint`；host 用 `hasAppRootEvidence()` 校验后才认。这样即使自动探测全落空，面板本身还能用（不然连配置都存不下来 —— 配置文件就在 `appRoot` 里）。
 - **布局自适应**：`resolveLayout()` 把「逻辑名 → 本机真实路径」现解一遍。每个逻辑名给一串候选（appRoot 内的桌面式路径 → 往上 1~3 层的 Android 式路径 → 宿主注入的环境变量），取第一个真实存在的；数据库除了固定位置外，最后还会在 appRoot 里找任意 `*.sqlite3`。候选顺序是「appRoot 内优先、环境变量最后」—— 反过来会出事：在 DSH 自己的进程里 `DSH_HOME` 指向它自己的 home，先信它就会把那下面的 `attachments` 当聊天附件扫进去（实测文件数从 75 涨到 443）。
+- **会话目录统一成 `@self`**：`dsh-runtime/sessions/<项目目录>/<sessionId>/session.v4.jsonl` 里的「项目目录」是 DSH 拿 cwd 编码出来的（`D:\...\workspace` → `--D-...-workspace--`），两台机器的 cwd 不可能一样。按原路径镜像的话，同一场对话在远端会变成两个文件，DSH 启动时 `listArtifacts()` 遍历所有项目目录、拿 `Set` 断言 sessionId 全局唯一，一撞就抛 `duplicate JSONL session id ... appears in multiple project directories`，整个会话的历史一条都载不出来（jsonl 本身完好）。所以 rel 键里固定写 `dsh-runtime/sessions/@self/<sid>/session.v4.jsonl`，落地时再换回本机真实的项目目录名 —— 远端一个 sessionId 永远只有一份。
+- **本机项目目录怎么认**：`pickSelfProject()` 依次试 cwd 线索（`DSH_CWD` / `ELECKOI_WORKSPACE_ROOT` / `<appRoot>/workspace` / appRoot 的上一层）、「只有一个目录就是它」、用库里 `chat_sessions.id` 投票。三条全落空就**明确返回「判不出来」并且什么都不动** —— 猜错会把本机正在写的那一支当成「多余的」挪走，比不同步严重得多。「本机数据布局」里会显示判断依据和置信度。
+- **历史遗留目录会自愈**：`consolidateSessions()` 把非本机项目目录里本机没有的会话搬进来，剩下的整目录挪到 `<appRoot>/eleckoi-sync/quarantine/<时间戳>/`（不删）；远端同理，`retireLegacySessionDirs()` 把 `dsh-runtime/sessions/` 下不是 `@self` 的历史目录 `RNFR/RNTO` 到 `.eleckoi-sync/remote-quarantine/<时间戳>/`，再重扫一遍。IIS 上整个目录改名是支持的（实测带三层子目录也能一次挪走）。
+- **别把「列不出来」当「目录是空的」**：早期版本给 `list()` 加了 `.catch(() => undefined)`，数据连接一超时就被当成空目录，同步于是把本地整棵树重传一遍。现在 `collect()` 会区分「正常收完」和「被超时掐断」（`socket.eleckoiTimedOut`），后者直接抛；`withData` 的 `tolerateFailure` 只用于「服务端不认识这条命令」，不吞数据连接错误。
+- **三个超时分开**：`connectTimeoutMs`（建 TCP，默认 12s）/ `timeoutMs`（控制通道等回复，20s）/ `dataTimeoutMs`（数据通道空闲，20s），都能在配置里覆盖。合成一个 30 秒的后果是：手机走错网段时每个文件都要干等 30 秒，面板看起来就是「点测试连接一直卡住」。
 
 ---
 
@@ -147,6 +153,9 @@ ftp:
   user: 'anonymous'
   password: ''
   remoteRoot: '/eleckoi'
+  connectTimeoutMs: 12000   # 建 TCP 的超时
+  timeoutMs: 20000          # 控制通道等回复
+  dataTimeoutMs: 20000      # 数据通道空闲
 ```
 
 ---
