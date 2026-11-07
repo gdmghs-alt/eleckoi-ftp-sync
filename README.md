@@ -15,7 +15,7 @@ ElecKoi（DeepSeek Harness 桌面端）插件：把宿主机数据目录与 FTP 
 | ✅ | `dsh-runtime/session-snapshots` | 每个会话挂的预设、模型、推理档位、禁用的工具组 |
 | ✅ | `dsh-runtime/generated-presets` | 由预设表渲染出的 `preset.json` |
 | ✅ | `dsh-runtime/home/attachments` | 聊天里贴的附件正文 |
-| ✅ | `dsh-runtime/home/llm-deepseek` | 附件索引 `files-v3.json`，`fileId` ↔ sha256 映射 |
+| ✅ | `dsh-runtime/home/llm-deepseek/files-v3.json` | 附件索引（只带这一个文件），`fileId` ↔ sha256 映射 |
 | ✅ | `media` | 图片资源 |
 | ✅ | `author-scripts` | 作者脚本 |
 | ❌ | 缓存、`logs`、`node_modules`、`.plugin-manager`、`*-wal`、`*-shm`、`*.bak-*` | |
