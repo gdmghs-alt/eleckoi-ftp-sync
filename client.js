@@ -369,7 +369,24 @@ window.__ModuleLoader__.load({
                 Object.keys(diag.env).map(key => `${key} = ${diag.env[key] === null ? '（未设置）' : diag.env[key]}`).join('\n')),
               h('div', { style: styles.hint }, '全部候选（含未命中）：'),
               h('pre', { style: styles.pre },
-                diag.candidates.map(item => `${item.evidence.length > 0 ? '✓' : '·'} ${item.path}  ← ${item.from}`).join('\n')))
+                diag.candidates.map(item => `${item.evidence.length > 0 ? '✓' : '·'} ${item.path}  ← ${item.from}`).join('\n')),
+              h('div', { style: styles.hint }, '找到的 dsh-runtime / 数据库所在层（直接填最可能的那个到「数据目录」）：'),
+              h('pre', { style: styles.pre },
+                Object.keys(diag.probes || {}).length === 0
+                  ? '（往下扫了 3 层，没找到任何 dsh-runtime 目录或 .sqlite3 文件）'
+                  : Object.keys(diag.probes).map(seed => `${seed}\n` + diag.probes[seed]
+                    .map(hit => `  ✓ ${hit.path}   [${hit.kind === 'db' ? `含 ${hit.detail}` : '含 dsh-runtime'}]`)
+                    .join('\n')).join('\n\n')),
+              h('div', { style: styles.hint }, '目录普查（每个种子目录里都有些什么；✓ 表示那层像数据根，可以直接填到上面「数据目录」）：'),
+              h('pre', { style: styles.pre },
+                (diag.survey || []).map(block => {
+                  const head = `${block.seed}`
+                  const listing = `  ${block.entries.join('  ')}`
+                  const hits = block.hits.length === 0
+                    ? '  ✗ 这一层没有像数据根的子目录'
+                    : block.hits.map(hit => `  ✓ ${hit.path}  [${hit.evidence.join(', ')}]`).join('\n')
+                  return `${head}\n${listing}\n${hits}`
+                }).join('\n\n') || '（没扫到候选种子）'))
               : null,
             logText ? h('pre', { style: styles.pre }, logText) : null)
         }
