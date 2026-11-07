@@ -9,6 +9,9 @@
  *   plan          —— 现在比对一次，返回上传/下载摘要（不传输、不修改任何文件）
  *   start         —— 写 job、启动守护进程；之后你关闭 ElecKoi，守护进程接管
  *   sync          —— 不关程序就地同步（Android / 没法 spawn 子进程的场合走这条）
+ *   restore.list  —— 列出本机可回滚的恢复点（覆盖前备份 + 归并时挪走的会话目录）
+ *   restore.plan  —— 预演回滚：会覆盖哪些文件，不写盘
+ *   restore.apply —— 真回滚到某个恢复点（只覆盖恢复点里有的文件）
  *   cancel / log  —— 取消等待中的守护进程 / 读取最近日志
  */
 import { spawn } from 'node:child_process'
@@ -20,6 +23,7 @@ import { fileURLToPath } from 'node:url'
 import { detectAppRoot, diagnoseAppRoot, hasAppRootEvidence, planSync, resolveLayout, scanLocal, summarize } from './lib/core.js'
 import { createDriver } from './lib/drivers.js'
 import { applyInPlace } from './lib/inline.js'
+import { listRestorePoints, restorePoint } from './lib/restore.js'
 
 const CHANNEL = '/eleckoi-ftp-sync'
 const pluginDir = path.dirname(fileURLToPath(import.meta.url))
@@ -372,6 +376,14 @@ export function apply(ctx, rawConfig) {
       }
 
       const direction = payload?.direction === 'download' || payload?.direction === 'upload' ? payload.direction : 'both'
+      /**
+       * 强制下载：不看时间戳，远端有什么就盖什么。
+       *
+       * 「本机被同步换坏了」这种情况按时间比是没用的 —— 坏数据刚刚才写下去，
+       * mtime 比远端还新，正常比对会判成「本地较新，该上传」，正好把坏的推上去。
+       * 所以给一个明确的、只朝一个方向的覆盖开关。
+       */
+      const forceDownload = payload?.forceDownload === true
       const stamp = Date.now()
       const logPath = path.join(metaDir, 'logs', `inline-${stamp}.log`)
       inlineRunning = true
@@ -384,11 +396,14 @@ export function apply(ctx, rawConfig) {
           logPath,
           deviceId: process.env.COMPUTERNAME ?? null,
           direction,
+          forceDownload,
+          resetSessions: payload?.resetSessions === true,
         })
         const needsRestart = result.downloaded > 0
         return ok({
           ...result,
           direction,
+          forceDownload,
           needsRestart,
           hint: needsRestart
             ? '已把远端较新的数据换进本机。请完全退出并重新打开 ElecKoi（不是回到桌面，是从后台划掉），新数据才会被读到。'
@@ -424,6 +439,83 @@ export function apply(ctx, rawConfig) {
       } catch {
         return ok({ text: '', path: file })
       }
+    },
+
+    /**
+     * 列出本机的恢复点：覆盖前的备份 + 归并时挪走的会话目录。
+     *
+     * 手机端是独立 App，数据在私有目录里，用户既不能用文件管理器也不能 adb 进去，
+     * 所以必须由面板把「能回到哪一刻」摊出来，否则同步出错就是死局。
+     */
+    async 'restore.list'() {
+      const root = await ensureAppRoot()
+      const metaDir = metaDirOf(root)
+      if (!metaDir) return fail('app-root-unknown', '找不到 ElecKoi 数据目录')
+      return ok(await listRestorePoints(metaDir))
+    },
+
+    /** 预演：说清楚会覆盖哪些文件，一个字节都不写。 */
+    async 'restore.plan'(payload) {
+      const root = await ensureAppRoot()
+      const metaDir = metaDirOf(root)
+      if (!root || !metaDir) return fail('app-root-unknown', '找不到 ElecKoi 数据目录')
+      const layout = await resolveLayout(root)
+      const result = await restorePoint({
+        appRoot: root,
+        metaDir,
+        layout,
+        kind: payload?.kind,
+        id: payload?.id,
+        sessionIds: payload?.sessionIds,
+        dryRun: true,
+      })
+      return ok({
+        ...result,
+        sample: result.items.filter(item => item.action === 'restore').slice(0, 12),
+      })
+    },
+
+    /**
+     * 真回滚。只覆盖恢复点里存在的那部分文件，本机多出来的一律不动 ——
+     * 宁可少删，也不要因为路径算错把用户的其它数据带走。
+     */
+    async 'restore.apply'(payload) {
+      const root = await ensureAppRoot()
+      const metaDir = metaDirOf(root)
+      if (!root || !metaDir) return fail('app-root-unknown', '找不到 ElecKoi 数据目录')
+      if (inlineRunning) return fail('already-running', '正在同步，等它结束再回滚')
+      const state = await readState()
+      if (guardianAlive(state.guardianPid)) return fail('already-running', '有一个同步在等 ElecKoi 退出，先取消它')
+      const layout = await resolveLayout(root)
+      const stamp = Date.now()
+      const logPath = path.join(metaDir, 'logs', `restore-${stamp}.log`)
+      const append = async (message, extra) => {
+        const line = `[${new Date().toISOString()}] ${message}${extra === undefined ? '' : ` ${JSON.stringify(extra)}`}\n`
+        try {
+          await fsp.mkdir(path.dirname(logPath), { recursive: true })
+          await fsp.appendFile(logPath, line, 'utf8')
+        } catch {
+          // 日志写不进去不影响回滚
+        }
+      }
+      await append('restore started', { kind: payload?.kind ?? 'backup', id: payload?.id ?? null })
+      const result = await restorePoint({
+        appRoot: root,
+        metaDir,
+        layout,
+        kind: payload?.kind,
+        id: payload?.id,
+        sessionIds: payload?.sessionIds,
+        dryRun: false,
+        onProgress: progress => void append('restored', progress),
+      })
+      await append('restore complete', { restored: result.restored, skipped: result.skipped })
+      await writeState({ lastRestore: { kind: result.kind, id: result.id, restored: result.restored, at: new Date().toISOString() } })
+      return ok({
+        ...result,
+        logPath,
+        hint: '已把备份换回本机。请完全退出并重新打开 ElecKoi（从后台划掉），新数据才会被读到。',
+      })
     },
   }
 

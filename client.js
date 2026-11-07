@@ -121,6 +121,8 @@ window.__ModuleLoader__.load({
           const [diag, setDiag] = React.useState(null)
           const [rootHint, setRootHint] = React.useState(() => readRootHint())
           const [form, setForm] = React.useState(null)
+          const [restore, setRestore] = React.useState(null)
+          const [restorePreview, setRestorePreview] = React.useState(null)
 
           const run = async task => {
             setBusy(true)
@@ -176,10 +178,31 @@ window.__ModuleLoader__.load({
           })
 
           // 就地同步：手机上（spawn 不起守护进程）走这条。direction 决定只拉、只推还是双向。
-          const doSync = direction => run(async () => {
-            const result = await call('sync', { direction })
+          // forceDownload 用于「本机被换坏了」：不看时间戳，远端有什么就盖什么。
+          const doSync = (direction, options) => run(async () => {
+            const result = await call('sync', { direction, ...(options || {}) })
             setNote(result && result.hint ? result.hint : '完成')
             setPlan(null)
+            setStatus(await call('status'))
+          })
+
+          // 恢复点：备份（覆盖前的现场）与 quarantine（归并时挪走的会话）。
+          const doListRestore = () => run(async () => {
+            const result = await call('restore.list')
+            setRestore(result)
+            setRestorePreview(null)
+            setNote(result && result.items ? `找到 ${result.items.length} 个恢复点` : '没有找到恢复点')
+          })
+
+          const doRestorePlan = (kind, id) => run(async () => {
+            setRestorePreview(await call('restore.plan', { kind, id }))
+            setNote('以下是预演，还没动任何文件')
+          })
+
+          const doRestoreApply = (kind, id) => run(async () => {
+            const result = await call('restore.apply', { kind, id })
+            setNote(result && result.hint ? result.hint : `已恢复 ${result.restored} 个文件`)
+            setRestorePreview(null)
             setStatus(await call('status'))
           })
 
@@ -316,7 +339,11 @@ window.__ModuleLoader__.load({
 
             h('div', { style: styles.actions },
               h('button', { type: 'button', style: styles.button, disabled: busy, onClick: () => doSync('download') }, '只从 FTP 下载'),
-              h('button', { type: 'button', style: styles.button, disabled: busy, onClick: () => doSync('upload') }, '只上传到 FTP')),
+              h('button', { type: 'button', style: styles.button, disabled: busy, onClick: () => doSync('upload') }, '只上传到 FTP'),
+              h('button', {
+                type: 'button', style: styles.button, disabled: busy,
+                onClick: () => doSync('download', { forceDownload: true }),
+              }, '强制从 FTP 覆盖本机')),
 
             h('div', { style: styles.card },
               h('div', { style: styles.cardTitle }, '数据目录'),
@@ -358,6 +385,47 @@ window.__ModuleLoader__.load({
                 ? h('div', { style: styles.hint }, `缺失：${status.layout.missing.join('、')}（这些目录本机没有，不会同步）`)
                 : null)
               : null,
+            h('div', { style: styles.card },
+              h('div', { style: styles.cardTitle }, '恢复点（把之前那份数据拿回来）'),
+              h('div', { style: styles.hint },
+                '每次要覆盖本机之前，插件都会先把现场整份复制到 backups/<时间戳>/；归并会话目录时，'
+                + '被判定为「不属于本机」的那一支会整目录挪到 quarantine/<时间戳>/ 而不是删掉。两边都在这。'),
+              h('div', { style: styles.hint },
+                '回滚只覆盖本机，不碰远端 —— 所以任何时候做都不会把远端也搞坏。回滚完要完全退出重开 ElecKoi。'),
+              h('div', { style: styles.actions },
+                h('button', { type: 'button', style: styles.primary, disabled: busy, onClick: doListRestore }, '列出恢复点')),
+              restore && restore.items ? h('pre', { style: styles.pre },
+                restore.items.length === 0
+                  ? '（本机还没有任何恢复点）'
+                  : restore.items.map(item =>
+                    `${item.kind === 'quarantine' ? '归并收容' : '覆盖前备份'}  ${item.id}`
+                    + `\n   ${item.files} 个文件 / ${Math.round(item.bytes / 1024 / 1024)} MB`
+                    + `${item.hasDatabase ? ` / 含数据库 ${Math.round(item.databaseBytes / 1024)} KB` : ' / 不含数据库'}`
+                    + `\n   会话：${item.sessions.length === 0 ? '（没有）' : item.sessions.join('、')}`
+                    + `\n   → ${item.dir}`
+                  ).join('\n\n')) : null,
+              restore && restore.items && restore.items.length > 0
+                ? h('div', { style: styles.actions },
+                  ...restore.items.slice(0, 6).map(item =>
+                    h('button', {
+                      type: 'button', style: styles.button, disabled: busy,
+                      onClick: () => doRestorePlan(item.kind, item.id),
+                    }, `预演 ${item.id}`)))
+                : null,
+              restorePreview ? h('div', null,
+                h('pre', { style: styles.pre },
+                  `恢复点 ${restorePreview.kind}/${restorePreview.id}`
+                  + `\n要覆盖 ${restorePreview.restored} 个文件，跳过 ${restorePreview.skipped} 个`
+                  + `\n\n` + (restorePreview.sample || []).map(entry =>
+                    `${entry.canonical}\n     → ${entry.target}`).join('\n')),
+                h('div', { style: styles.actions },
+                  h('button', {
+                    type: 'button', style: styles.primary, disabled: busy,
+                    onClick: () => doRestoreApply(restorePreview.kind, restorePreview.id),
+                  }, `确认回滚 ${restorePreview.id}`))) : null,
+              h('div', { style: styles.hint },
+                '如果本机被同步换坏了、又没有任何备份（例如手机上第一次装插件），'
+                + '用「强制从 FTP 覆盖本机」：不看时间戳，远端有什么就盖什么。')),
             note ? h('div', { style: styles.ok }, note) : null,
             error ? h('div', { style: styles.error }, error) : null,
             diag ? h('div', { style: styles.card },
