@@ -1,8 +1,11 @@
 /**
- * Client 半：把「FTP 数据同步」做成最左侧导航栏（sidebar.panellist）里的一个图标入口，
- * 点开后是主区域（main slot / key = ftp-sync）里的整页面板。
- * 面板里可以直接填 FTP 地址/端口/账号/密码/远端目录，保存后会写到
- * <appRoot>/eleckoi-sync/config.json，不需要改 profile 配置。
+ * Client 半：最左侧导航栏（sidebar.panellist）一个图标 → 主区域（main slot / key = ftp-sync）整页面板。
+ *
+ * 面板只做两件事：
+ *   1. 上传 —— 把 FTP 那个远端目录清空，然后把本机数据整份传上去（不用关程序）。
+ *   2. 下载 —— 把本机数据清空，然后把 FTP 的东西整份搬下来（必须先退出 ElecKoi，
+ *      因为 Windows 上主库被打开着时连改名都做不到）。
+ * 没有按时间比对的「双向同步」了：谁新谁旧的判断已经删掉，两个按钮都是整份覆盖。
  */
 window.__ModuleLoader__.load({
   id: 'eleckoi-ftp-sync',
@@ -29,7 +32,7 @@ window.__ModuleLoader__.load({
       cardTitle: { fontWeight: 600, marginBottom: 8, fontSize: 13 },
       row: { display: 'flex', justifyContent: 'space-between', gap: 12, margin: '3px 0' },
       label: { color: 'var(--tertiary-text, #93a3ae)' },
-      mono: { fontFamily: 'ui-monospace, Menlo, Consolas, monospace', fontSize: 12 },
+      mono: { fontFamily: 'ui-monospace, Menlo, Consolas, monospace', fontSize: 12, wordBreak: 'break-all' },
       field: { display: 'grid', gridTemplateColumns: '82px 1fr', alignItems: 'center', gap: 8, margin: '6px 0' },
       input: {
         width: '100%', padding: '6px 8px', borderRadius: 8,
@@ -48,6 +51,15 @@ window.__ModuleLoader__.load({
         background: 'rgba(80,200,150,.18)', color: '#b8f0d8', fontSize: 12,
         cursor: 'pointer', fontWeight: 600,
       },
+      danger: {
+        padding: '7px 14px', borderRadius: 9, border: '1px solid rgba(255,140,120,.55)',
+        background: 'rgba(230,110,90,.16)', color: '#ffc2b6', fontSize: 12,
+        cursor: 'pointer', fontWeight: 600,
+      },
+      big: {
+        display: 'block', width: '100%', marginTop: 10, padding: '13px 16px', borderRadius: 12,
+        fontSize: 13.5, fontWeight: 600, cursor: 'pointer', textAlign: 'left',
+      },
       actions: { display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' },
       error: { color: '#ff9c8a', marginTop: 10, whiteSpace: 'pre-wrap' },
       ok: { color: '#b8f0d8', marginTop: 10, whiteSpace: 'pre-wrap' },
@@ -63,18 +75,23 @@ window.__ModuleLoader__.load({
       },
     }
 
-    /** 侧栏图标：两个绕行的循环箭头。 */
+    /** 侧栏图标：上下两个对开的箭头（一个上去、一个下来）。 */
     function SyncNavIcon({ size = 24 }) {
       return h('svg', {
         width: size, height: size, viewBox: '0 0 24 24', fill: 'none',
         stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round',
         'aria-hidden': true,
       },
-        h('path', { d: 'M20.4 12a8.4 8.4 0 0 1-14.2 6.1' }),
-        h('path', { d: 'M3.6 12a8.4 8.4 0 0 1 14.2-6.1' }),
-        h('path', { d: 'M17.8 2.6v3.9h-3.9' }),
-        h('path', { d: 'M6.2 21.4v-3.9h3.9' })
+        h('path', { d: 'M8 20.5V4' }),
+        h('path', { d: 'M4.2 7.8 8 4l3.8 3.8' }),
+        h('path', { d: 'M16 3.5V20' }),
+        h('path', { d: 'M19.8 16.2 16 20l-3.8-3.8' })
       )
+    }
+
+    const mb = bytes => {
+      const n = Number(bytes) || 0
+      return n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`
     }
 
     return {
@@ -82,7 +99,7 @@ window.__ModuleLoader__.load({
       apply(ctx) {
         const ROOT_HINT_KEY = 'eleckoi-ftp-sync.appRootHint'
 
-        /** 手动指定的数据目录。手机端自动探测不出来时靠它，存在浏览器侧。 */
+        /** 手动指定的数据目录。自动探测不出来时靠它，存在浏览器侧。 */
         const readRootHint = () => {
           try {
             return window.localStorage.getItem(ROOT_HINT_KEY) || ''
@@ -113,7 +130,6 @@ window.__ModuleLoader__.load({
 
         function SyncPage() {
           const [status, setStatus] = React.useState(null)
-          const [plan, setPlan] = React.useState(null)
           const [busy, setBusy] = React.useState(false)
           const [error, setError] = React.useState(null)
           const [note, setNote] = React.useState('')
@@ -123,6 +139,7 @@ window.__ModuleLoader__.load({
           const [form, setForm] = React.useState(null)
           const [restore, setRestore] = React.useState(null)
           const [restorePreview, setRestorePreview] = React.useState(null)
+          const [confirming, setConfirming] = React.useState(null)
 
           const run = async task => {
             setBusy(true)
@@ -141,7 +158,7 @@ window.__ModuleLoader__.load({
             call('config.get').then(setForm).catch(() => {})
             const timer = setInterval(() => {
               call('status').then(setStatus).catch(() => {})
-            }, 5000)
+            }, 3000)
             return () => clearInterval(timer)
           }, [])
 
@@ -166,27 +183,41 @@ window.__ModuleLoader__.load({
             setNote(`连接成功：${result.target}，远端 ${result.entries} 个文件${result.hasManifest ? '（有 manifest）' : ''}`)
           })
 
-          const doPlan = () => run(async () => {
-            setPlan(await call('plan'))
-            setNote('')
-          })
-
-          const doStart = () => run(async () => {
-            const result = await call('start')
-            setNote(result && result.hint ? result.hint : '已启动')
+          /**
+           * 上传：整个远端目录会被清空，所以点一次不够 —— 先弹成「再点一次确认」。
+           * 二次确认放在按钮自己身上，不用 window.confirm（Electron 里那个是原生模态，
+           * 会把整个渲染进程卡住，连面板自己的进度都刷不出来）。
+           */
+          const doUpload = () => run(async () => {
+            if (confirming !== 'upload') {
+              setConfirming('upload')
+              setNote('再点一次「确认清空远端并上传」：远端那个目录里的东西会被全部删掉，然后换成这台电脑上的数据。')
+              return
+            }
+            setConfirming(null)
+            setNote('正在清空远端并上传，别关程序…')
+            const result = await call('upload')
+            setNote(result && result.hint ? result.hint : `已上传 ${result.uploaded} 个文件`)
             setStatus(await call('status'))
           })
 
-          // 就地同步：手机上（spawn 不起守护进程）走这条。direction 决定只拉、只推还是双向。
-          // forceDownload 用于「本机被换坏了」：不看时间戳，远端有什么就盖什么。
-          const doSync = (direction, options) => run(async () => {
-            const result = await call('sync', { direction, ...(options || {}) })
-            setNote(result && result.hint ? result.hint : '完成')
-            setPlan(null)
+          /**
+           * 下载：本机会被清空，而且必须退出程序才能做 —— 点下去之后只写 job、起守护进程，
+           * 真正的活在退出后干。守护进程先备份、再清空、再把远端搬下来，最后自动重开。
+           */
+          const doDownload = () => run(async () => {
+            if (confirming !== 'download') {
+              setConfirming('download')
+              setNote('再点一次「确认清空本机并从 FTP 下载」：本机数据会被清空，然后换成 FTP 上那一份。'
+                + '动手前会自动整份备份到 eleckoi-sync/backups/<时间戳>/，出事能用「恢复点」回滚。')
+              return
+            }
+            setConfirming(null)
+            const result = await call('download')
+            setNote(result && result.hint ? result.hint : '已经排队，等你退出 ElecKoi')
             setStatus(await call('status'))
           })
 
-          // 恢复点：备份（覆盖前的现场）与 quarantine（归并时挪走的会话）。
           const doListRestore = () => run(async () => {
             const result = await call('restore.list')
             setRestore(result)
@@ -208,11 +239,10 @@ window.__ModuleLoader__.load({
 
           const doCancel = () => run(async () => {
             await call('cancel')
-            setNote('已取消')
+            setNote('已取消等待')
             setStatus(await call('status'))
           })
 
-          // 诊断：把 appRoot 推导过程摊出来。手机端找不到数据目录时靠这个自报。
           const doDiagnose = () => run(async () => {
             const report = await call('diagnose')
             setDiag(report)
@@ -224,7 +254,6 @@ window.__ModuleLoader__.load({
             setLogText(result && result.text ? result.text : '（还没有日志）')
           })
 
-          // 手动指定数据目录：写进浏览器本地，之后每个请求都带上，host 侧校验通过才认。
           const doSetRoot = () => run(async () => {
             const value = rootHint.trim()
             writeRootHint(value)
@@ -239,7 +268,10 @@ window.__ModuleLoader__.load({
             setDiag(report)
           })
 
-          const running = Boolean(status && status.guardianRunning === true)
+          const waitingExit = Boolean(status && status.guardianRunning === true)
+          const phaseText = status
+            ? (waitingExit ? `等待退出（${status.phase}）` : (status.phase || 'idle'))
+            : '读取中…'
 
           const field = (label, input) => h('label', { style: styles.field },
             h('span', { style: styles.label }, label), input)
@@ -253,9 +285,9 @@ window.__ModuleLoader__.load({
             h('div', { style: styles.card },
               h('div', { style: styles.row },
                 h('span', { style: styles.label }, '状态'),
-                h('span', null, running ? `等待退出（${status.phase}）` : (status ? status.phase : '读取中…'))),
+                h('span', null, phaseText)),
               h('div', { style: styles.row },
-                h('span', { style: styles.label }, '同步目标'),
+                h('span', { style: styles.label }, '目标'),
                 h('span', { style: styles.mono }, status ? status.target : '—')),
               h('div', { style: styles.row },
                 h('span', { style: styles.label }, '配置'),
@@ -265,8 +297,51 @@ window.__ModuleLoader__.load({
                   h('span', { style: styles.label }, '上次结果'),
                   h('span', null, status.last.error
                     ? `失败：${status.last.error}`
-                    : `上传 ${status.last.uploaded} · 下载 ${status.last.downloaded}`))
+                    : (status.last.mode === 'download'
+                      ? `下载 ${status.last.downloaded} 个 / ${mb(status.last.bytes)}`
+                      : `上传 ${status.last.uploaded} 个 / ${mb(status.last.bytes)}`)))
                 : null),
+
+            h('div', { style: styles.card },
+              h('div', { style: styles.cardTitle }, '两个动作'),
+              h('button', {
+                type: 'button',
+                disabled: busy || waitingExit,
+                onClick: doUpload,
+                style: {
+                  ...styles.big,
+                  border: `1px solid ${confirming === 'upload' ? 'rgba(255,140,120,.6)' : 'rgba(120,220,180,.45)'}`,
+                  background: confirming === 'upload' ? 'rgba(230,110,90,.16)' : 'rgba(80,200,150,.16)',
+                  color: confirming === 'upload' ? '#ffc2b6' : '#b8f0d8',
+                },
+              }, confirming === 'upload'
+                ? '确认清空远端并上传（再点一次）'
+                : '上传到 FTP：清空远端 → 把本机传上去'),
+              h('div', { style: styles.hint },
+                '不用关程序。传之前会把数据库做一份一致快照，所以程序开着时传上去的库也是能打开的。'
+                + '远端那个目录里的东西会被全部删掉，只留同步用的 .eleckoi-sync。'),
+              h('button', {
+                type: 'button',
+                disabled: busy || waitingExit,
+                onClick: doDownload,
+                style: {
+                  ...styles.big,
+                  border: `1px solid ${confirming === 'download' ? 'rgba(255,140,120,.6)' : 'rgba(255,140,120,.35)'}`,
+                  background: confirming === 'download' ? 'rgba(230,110,90,.22)' : 'rgba(230,110,90,.1)',
+                  color: '#ffc2b6',
+                },
+              }, confirming === 'download'
+                ? '确认清空本机并从 FTP 下载（再点一次）'
+                : '从 FTP 下载：清空本机 → 把远端搬下来'),
+              h('div', { style: styles.hint },
+                '本机会被清空，所以必须退出 ElecKoi 才能做（主库开着时连改名都做不到）。'
+                + '点完之后照提示完全退出程序：它会先整份备份本机，再清空，再把 FTP 的内容搬回来，最后自动重开。'),
+              h('div', { style: styles.actions },
+                waitingExit
+                  ? h('button', { type: 'button', style: styles.button, disabled: busy, onClick: doCancel }, '取消等待')
+                  : null,
+                h('button', { type: 'button', style: styles.button, disabled: busy, onClick: doLog }, '看日志'),
+                h('button', { type: 'button', style: styles.button, disabled: busy, onClick: refresh }, '刷新状态'))),
 
             h('div', { style: styles.card },
               h('div', { style: styles.cardTitle }, '同步目标'),
@@ -309,111 +384,40 @@ window.__ModuleLoader__.load({
                     h('button', { type: 'button', style: styles.primary, disabled: busy, onClick: doSave }, '保存设置'),
                     h('button', { type: 'button', style: styles.button, disabled: busy, onClick: doTest }, '测试连接')))),
 
-            plan
-              ? h('div', { style: styles.card },
-                h('div', { style: styles.cardTitle }, '差异'),
-                h('div', { style: styles.row },
-                  h('span', { style: styles.label }, '需要上传'),
-                  h('span', null, `${plan.uploadCount} 个 / ${Math.round(plan.uploadBytes / 1024)} KB`)),
-                h('div', { style: styles.row },
-                  h('span', { style: styles.label }, '需要下载'),
-                  h('span', null, `${plan.downloadCount} 个 / ${Math.round(plan.downloadBytes / 1024)} KB`)),
-                h('div', { style: styles.row },
-                  h('span', { style: styles.label }, '已一致'),
-                  h('span', null, `${plan.skippedCount} 个`)),
-                plan.conflictCount > 0
-                  ? h('div', { style: { ...styles.row, color: '#ffb46a' } },
-                    h('span', { style: styles.label }, '冲突'),
-                    h('span', null, `${plan.conflictCount} 个（会阻止执行）`))
-                  : null)
-              : null,
-
-            h('div', { style: styles.actions },
-              h('button', { type: 'button', style: styles.button, disabled: busy, onClick: doPlan }, '检查差异'),
-              h('button', { type: 'button', style: styles.primary, disabled: busy || running, onClick: doStart }, '同步并重启'),
-              h('button', { type: 'button', style: styles.primary, disabled: busy || running, onClick: () => doSync('both') }, '立即同步（不重启）'),
-              running ? h('button', { type: 'button', style: styles.button, disabled: busy, onClick: doCancel }, '取消') : null,
-              h('button', { type: 'button', style: styles.button, disabled: busy, onClick: doLog }, '看日志'),
-              h('button', { type: 'button', style: styles.button, disabled: busy, onClick: doDiagnose }, '诊断环境'),
-              h('button', { type: 'button', style: styles.button, disabled: busy, onClick: refresh }, '刷新状态')),
-
-            h('div', { style: styles.actions },
-              h('button', { type: 'button', style: styles.button, disabled: busy, onClick: () => doSync('download') }, '只从 FTP 下载'),
-              h('button', { type: 'button', style: styles.button, disabled: busy, onClick: () => doSync('upload') }, '只上传到 FTP'),
-              h('button', {
-                type: 'button', style: styles.button, disabled: busy,
-                onClick: () => doSync('download', { forceDownload: true }),
-              }, '强制从 FTP 覆盖本机')),
-
-            h('div', { style: styles.actions },
-              h('button', {
-                type: 'button', style: styles.danger || styles.button, disabled: busy || running,
-                onClick: () => doSync('download', { forceDownload: true, resetSessions: true }),
-              }, '修复会话重复（清空会话区后从 FTP 重灌）')),
-
-            h('div', { style: styles.hint },
-              '「修复会话重复」= 把本机 sessions 下所有项目目录整棵挪进 eleckoi-sync/quarantine/，'
-              + '再从 FTP 拉回来。会话正文报 duplicate JSONL session id 时点这个：'
-              + '同一场对话在两个项目目录里各有一份，DSH 会直接拒绝加载。'
-              + '挪走不是删除，要捞回来还能从 quarantine 里取。'),
-
             h('div', { style: styles.card },
-              h('div', { style: styles.cardTitle }, '数据目录'),
+              h('div', { style: styles.cardTitle }, '搬运范围'),
               h('div', { style: styles.hint },
-                '一般不用填。手机端如果报「找不到 ElecKoi 数据目录」，点「诊断环境」看候选路径，'
-                + '把其中真实的那个（含 dsh-runtime 的那一层）填到这里。'),
-              field('目录', h('input', {
-                style: styles.input, value: rootHint, placeholder: '/data/user/0/<包名>/files/eleckoi-desktop',
-                onChange: event => setRootHint(event.target.value),
-              })),
-              h('div', { style: styles.actions },
-                h('button', { type: 'button', style: styles.primary, disabled: busy, onClick: doSetRoot }, '使用这个目录'),
-                h('button', {
-                  type: 'button', style: styles.button, disabled: busy,
-                  onClick: () => { setRootHint(''); writeRootHint(''); setNote('已清空手动目录，下次请求重新自动探测') },
-                }, '清空'))),
-
-            h('div', { style: styles.hint },
-              '「同步并重启」只在电脑上有效：守护进程会等你关闭 ElecKoi，备份、双向替换，然后重新打开程序。'),
-            h('div', { style: styles.hint },
-              '手机上（独立 App）用「立即同步」：当场比对并替换文件，完成后自己从后台划掉 ElecKoi 再打开，新数据才会被读到。'),
-
-            h('div', { style: styles.card },
-              h('div', { style: styles.cardTitle }, '同步范围'),
-              h('div', { style: styles.hint },
-                '数据库（角色卡、世界书、Agent 预设）+ 对话正文 + 会话快照（每个对话挂的预设与模型）+ '
-                + '渲染出的 preset + 聊天附件与附件索引 + 图片资源 + 作者脚本。'),
+                '数据库（角色卡、世界书、Agent 预设）+ 对话正文 + 会话快照 + 渲染出的 preset + '
+                + '聊天附件与附件索引 + 图片资源 + 作者脚本。'),
               h('div', { style: styles.hint },
                 '设备私钥、服务器凭据、API key、插件配置、缓存与日志不在范围内。')),
+
             status && status.layout ? h('div', { style: styles.card },
               h('div', { style: styles.cardTitle }, '本机数据布局'),
-              h('div', { style: styles.hint },
-                '下面是把「同步范围」里每一项解到本机真实路径的结果。手机上路径和电脑不一样（没有 dsh-runtime 那一层），这里可以直接核对。'),
+              h('div', { style: styles.hint }, '把上面每一项解到本机真实路径的结果，出错时先来这里核对。'),
               h('pre', { style: styles.pre },
-                `数据库  ${status.layout.dbExists ? '✓' : '✗'}  ${status.layout.db}` + '\n'
+                `数据库  ${status.layout.dbExists ? '✓' : '✗'}  ${status.layout.db}\n`
                 + (status.layout.dirs || []).map(item => `${item.exists ? '✓' : '✗'} ${item.rel}\n     → ${item.path}`).join('\n') + '\n'
                 + (status.layout.files || []).map(item => `${item.exists ? '✓' : '✗'} ${item.rel}\n     → ${item.path}`).join('\n')),
               (status.layout.missing && status.layout.missing.length > 0)
-                ? h('div', { style: styles.hint }, `缺失：${status.layout.missing.join('、')}（这些目录本机没有，不会同步）`)
+                ? h('div', { style: styles.hint }, `缺失：${status.layout.missing.join('、')}（这些目录本机没有，不会搬）`)
                 : null)
               : null,
+
             h('div', { style: styles.card },
-              h('div', { style: styles.cardTitle }, '恢复点（把之前那份数据拿回来）'),
+              h('div', { style: styles.cardTitle }, '恢复点'),
               h('div', { style: styles.hint },
-                '每次要覆盖本机之前，插件都会先把现场整份复制到 backups/<时间戳>/；归并会话目录时，'
-                + '被判定为「不属于本机」的那一支会整目录挪到 quarantine/<时间戳>/ 而不是删掉。两边都在这。'),
-              h('div', { style: styles.hint },
-                '回滚只覆盖本机，不碰远端 —— 所以任何时候做都不会把远端也搞坏。回滚完要完全退出重开 ElecKoi。'),
+                '每次「从 FTP 下载」清空本机之前，都会先把现场整份复制到 eleckoi-sync/backups/<时间戳>/。'
+                + '回滚只覆盖本机，不碰远端。'),
               h('div', { style: styles.actions },
-                h('button', { type: 'button', style: styles.primary, disabled: busy, onClick: doListRestore }, '列出恢复点')),
+                h('button', { type: 'button', style: styles.button, disabled: busy, onClick: doListRestore }, '列出恢复点')),
               restore && restore.items ? h('pre', { style: styles.pre },
                 restore.items.length === 0
                   ? '（本机还没有任何恢复点）'
                   : restore.items.map(item =>
                     `${item.kind === 'quarantine' ? '归并收容' : '覆盖前备份'}  ${item.id}`
-                    + `\n   ${item.files} 个文件 / ${Math.round(item.bytes / 1024 / 1024)} MB`
-                    + `${item.hasDatabase ? ` / 含数据库 ${Math.round(item.databaseBytes / 1024)} KB` : ' / 不含数据库'}`
-                    + `\n   会话：${item.sessions.length === 0 ? '（没有）' : item.sessions.join('、')}`
+                    + `\n   ${item.files} 个文件 / ${mb(item.bytes)}`
+                    + `${item.hasDatabase ? ` / 含数据库 ${mb(item.databaseBytes)}` : ' / 不含数据库'}`
                     + `\n   → ${item.dir}`
                   ).join('\n\n')) : null,
               restore && restore.items && restore.items.length > 0
@@ -434,10 +438,24 @@ window.__ModuleLoader__.load({
                   h('button', {
                     type: 'button', style: styles.primary, disabled: busy,
                     onClick: () => doRestoreApply(restorePreview.kind, restorePreview.id),
-                  }, `确认回滚 ${restorePreview.id}`))) : null,
+                  }, `确认回滚 ${restorePreview.id}`))) : null),
+
+            h('div', { style: styles.card },
+              h('div', { style: styles.cardTitle }, '数据目录'),
               h('div', { style: styles.hint },
-                '如果本机被同步换坏了、又没有任何备份（例如手机上第一次装插件），'
-                + '用「强制从 FTP 覆盖本机」：不看时间戳，远端有什么就盖什么。')),
+                '一般不用填。报「找不到 ElecKoi 数据目录」时点「诊断环境」，把候选里真实的那个（含 dsh-runtime 的那一层）填到这里。'),
+              field('目录', h('input', {
+                style: styles.input, value: rootHint, placeholder: 'D:\\Users\\<你>\\AppData\\Roaming\\eleckoi-desktop',
+                onChange: event => setRootHint(event.target.value),
+              })),
+              h('div', { style: styles.actions },
+                h('button', { type: 'button', style: styles.primary, disabled: busy, onClick: doSetRoot }, '使用这个目录'),
+                h('button', {
+                  type: 'button', style: styles.button, disabled: busy,
+                  onClick: () => { setRootHint(''); writeRootHint(''); setNote('已清空手动目录，下次请求重新自动探测') },
+                }, '清空'),
+                h('button', { type: 'button', style: styles.button, disabled: busy, onClick: doDiagnose }, '诊断环境'))),
+
             note ? h('div', { style: styles.ok }, note) : null,
             error ? h('div', { style: styles.error }, error) : null,
             diag ? h('div', { style: styles.card },
@@ -458,27 +476,7 @@ window.__ModuleLoader__.load({
                   .join('\n') || '（没有任何候选命中）'),
               h('div', { style: styles.hint }, '环境变量：'),
               h('pre', { style: styles.pre },
-                Object.keys(diag.env).map(key => `${key} = ${diag.env[key] === null ? '（未设置）' : diag.env[key]}`).join('\n')),
-              h('div', { style: styles.hint }, '全部候选（含未命中）：'),
-              h('pre', { style: styles.pre },
-                diag.candidates.map(item => `${item.evidence.length > 0 ? '✓' : '·'} ${item.path}  ← ${item.from}`).join('\n')),
-              h('div', { style: styles.hint }, '找到的 dsh-runtime / 数据库所在层（直接填最可能的那个到「数据目录」）：'),
-              h('pre', { style: styles.pre },
-                Object.keys(diag.probes || {}).length === 0
-                  ? '（往下扫了 3 层，没找到任何 dsh-runtime 目录或 .sqlite3 文件）'
-                  : Object.keys(diag.probes).map(seed => `${seed}\n` + diag.probes[seed]
-                    .map(hit => `  ✓ ${hit.path}   [${hit.kind === 'db' ? `含 ${hit.detail}` : '含 dsh-runtime'}]`)
-                    .join('\n')).join('\n\n')),
-              h('div', { style: styles.hint }, '目录普查（每个种子目录里都有些什么；✓ 表示那层像数据根，可以直接填到上面「数据目录」）：'),
-              h('pre', { style: styles.pre },
-                (diag.survey || []).map(block => {
-                  const head = `${block.seed}`
-                  const listing = `  ${block.entries.join('  ')}`
-                  const hits = block.hits.length === 0
-                    ? '  ✗ 这一层没有像数据根的子目录'
-                    : block.hits.map(hit => `  ✓ ${hit.path}  [${hit.evidence.join(', ')}]`).join('\n')
-                  return `${head}\n${listing}\n${hits}`
-                }).join('\n\n') || '（没扫到候选种子）'))
+                Object.keys(diag.env).map(key => `${key} = ${diag.env[key] === null ? '（未设置）' : diag.env[key]}`).join('\n')))
               : null,
             logText ? h('pre', { style: styles.pre }, logText) : null)
         }

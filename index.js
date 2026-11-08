@@ -1,38 +1,31 @@
 /**
  * Host 半：暴露 `/eleckoi-ftp-sync` RPC 通道。
  *
- * 端点：
- *   status        —— 配置摘要、上次结果、守护进程是否在等重启
- *   config.get    —— 读取当前生效配置（patch 配置 + 面板里保存过的覆盖）
- *   config.save   —— 保存面板里填的 FTP/目录设置（写到 <appRoot>/eleckoi-sync/config.json）
- *   test          —— 用当前配置连一次远端，返回目录条目数（不传输数据）
- *   plan          —— 现在比对一次，返回上传/下载摘要（不传输、不修改任何文件）
- *   start         —— 写 job、启动守护进程；之后你关闭 ElecKoi，守护进程接管
- *   sync          —— 不关程序就地同步（Android / 没法 spawn 子进程的场合走这条）
- *   restore.list  —— 列出本机可回滚的恢复点（覆盖前备份 + 归并时挪走的会话目录）
- *   restore.plan  —— 预演回滚：会覆盖哪些文件，不写盘
- *   restore.apply —— 真回滚到某个恢复点（只覆盖恢复点里有的文件）
- *   cancel / log  —— 取消等待中的守护进程 / 读取最近日志
+ * 只有两个搬运动作，都是「整份镜像」，不做时间比对：
+ *   upload    —— 清空 FTP 上那个目录，然后把本地整份推上去（可以边用边传）
+ *   download  —— 备份本机 → 清空本地 → 把 FTP 整份搬下来（必须先关程序）
+ *
+ * 另外几个是配套的：
+ *   status / config.get / config.save / diagnose / test / cancel / log
+ *   restore.*  —— 下载前的自动备份可以回滚
  */
 import { spawn } from 'node:child_process'
 import fsp from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { detectAppRoot, diagnoseAppRoot, hasAppRootEvidence, planSync, resolveLayout, scanLocal, summarize } from './lib/core.js'
+import { detectAppRoot, diagnoseAppRoot, hasAppRootEvidence, resolveLayout } from './lib/core.js'
 import { createDriver } from './lib/drivers.js'
-import { applyInPlace } from './lib/inline.js'
+import { uploadAll } from './lib/mirror.js'
 import { listRestorePoints, restorePoint } from './lib/restore.js'
 
 const CHANNEL = '/eleckoi-ftp-sync'
 const pluginDir = path.dirname(fileURLToPath(import.meta.url))
 
 /**
- * 桌面端能用「同步并重启」：宿主是 Electron，process.execPath 能带
- * ELECTRON_RUN_AS_NODE 起来当 node 用，守护进程等主进程退出后再替换文件。
- * Android 端是独立 App，既拿不到可执行的 node，也没有「退出后重新拉起」，
- * 那条路只能就地同步（换上数据后由用户自己重开 App）。
+ * 桌面端才做得了「下载」：宿主是 Electron，process.execPath 能带
+ * ELECTRON_RUN_AS_NODE 起来当 node 用，守护进程等主进程退出后再清空、重灌。
+ * 上传不需要这些 —— 它只读本地、写远端，就地跑。
  */
 function describePlatform() {
   const platform = process.platform
@@ -46,7 +39,6 @@ function describePlatform() {
     dshHome: process.env.DSH_HOME ?? null,
     mobile,
     guardianSupported: desktop && execPath !== '',
-    inlineSupported: true,
   }
 }
 
@@ -268,44 +260,110 @@ export function apply(ctx, rawConfig) {
       }
     },
 
-    async plan() {
+    /**
+     * 上传：清空远端 → 本地上传。
+     *
+     * 这条**不用关程序**：它只读本地、只写远端，本机一个字节都不改。
+     * 主库在传之前会做一份 VACUUM INTO 快照，所以程序开着时传上去的也是能打开的库。
+     */
+    async upload() {
       const root = await ensureAppRoot()
-      if (!root) return fail('app-root-unknown', '找不到 ElecKoi 数据目录')
+      const metaDir = metaDirOf(root)
+      if (!root || !metaDir) return fail('app-root-unknown', '找不到 ElecKoi 数据目录')
       const config = await currentConfig()
-      const driver = await createDriver(config)
+      if (!describeConfig(config, root).configured) return fail('not-configured', '还没填同步目标')
+      const state = await readState()
+      if (guardianAlive(state.guardianPid)) return fail('already-running', '有一个任务在等 ElecKoi 退出，先取消它')
+      if (inlineRunning) {
+        const stuckFor = Date.now() - (inlineStartedAt ?? 0)
+        if (stuckFor < INLINE_LOCK_TIMEOUT_MS) {
+          return fail('already-running', `上一次搬运还在跑（已 ${Math.round(stuckFor / 1000)} 秒），等一下再看`)
+        }
+        inlineRunning = false
+      }
+
+      const stamp = Date.now()
+      const logPath = path.join(metaDir, 'logs', `upload-${stamp}.log`)
+      inlineRunning = true
+      inlineStartedAt = stamp
+      let lastWrite = 0
       try {
-        const local = await scanLocal(root)
-        const remote = await driver.list()
+        await writeState({ phase: 'uploading', mode: 'upload', startedAt: new Date().toISOString(), logPath })
+        const result = await uploadAll({
+          appRoot: root,
+          config,
+          metaDir,
+          logPath,
+          deviceId: process.env.COMPUTERNAME ?? null,
+          onProgress: progress => {
+            // 面板是轮询 status 的，节流一下，别把大量进度写盘。
+            if (Date.now() - lastWrite < 800 && progress.phase !== 'done' && progress.phase !== 'failed') return
+            lastWrite = Date.now()
+            void writeState({ phase: progress.phase, progress })
+          },
+        })
+        await writeState({
+          phase: result.error ? 'failed' : 'done',
+          finishedAt: new Date().toISOString(),
+          logPath,
+          result: {
+            mode: 'upload',
+            uploaded: result.uploaded,
+            skipped: result.skipped,
+            bytes: result.bytes,
+            purged: result.purged,
+            error: result.error,
+          },
+        })
         return ok({
-          ...summarize(planSync(local, remote.files, config.toleranceMs)),
-          remoteHasManifest: remote.hasManifest === true,
-          target: describeConfig(config, root).target,
-          layout: await describeLayout(root),
+          ...result,
+          hint: result.error
+            ? '上传失败，详见日志。远端可能已被清空一部分，重跑一次即可。'
+            : `已把远端清空并传上去 ${result.uploaded} 个文件（${(result.bytes / 1048576).toFixed(1)} MB）。`,
         })
       } finally {
-        await driver.close().catch(() => {})
+        inlineRunning = false
       }
     },
 
-    async start() {
+    /**
+     * 下载：备份本机 → 清空本地 → FTP 搬下来。
+     *
+     * 必须关掉 ElecKoi 才能做：Windows 上主库被打开着时连改名都做不到（EBUSY），
+     * 更没法删了重建。所以在宿主进程里只写 job、起守护进程，真正的活在退出后干。
+     */
+    async download() {
       const root = await ensureAppRoot()
       const metaDir = metaDirOf(root)
       const config = await currentConfig()
       if (!root || !metaDir) return fail('app-root-unknown', '找不到 ElecKoi 数据目录')
       if (!describeConfig(config, root).configured) return fail('not-configured', '还没填同步目标')
       if (!describePlatform().guardianSupported) {
-        return fail('guardian-unsupported', '这个平台起不了后台守护进程，请用「立即同步」')
+        return fail('guardian-unsupported', '这个平台起不了后台进程，下载（要清空本机）在这台设备上做不到')
       }
       const state = await readState()
-      if (guardianAlive(state.guardianPid)) return fail('already-running', '已经有一个同步在等待 ElecKoi 退出')
+      if (guardianAlive(state.guardianPid)) return fail('already-running', '已经有一个任务在等 ElecKoi 退出')
+      if (inlineRunning) return fail('already-running', '正在上传，等它结束再来')
+
+      // 先连一次远端：远端是空的话没必要让用户白关一次程序。
+      const probe = await createDriver(config)
+      try {
+        const remote = await probe.list()
+        if (remote.files.size === 0) {
+          return fail('remote-empty', '远端是空的，没有可下载的东西；本机未做任何改动')
+        }
+      } finally {
+        await probe.close().catch(() => {})
+      }
 
       const stamp = Date.now()
       const jobDir = path.join(metaDir, 'jobs')
       await fsp.mkdir(jobDir, { recursive: true })
       const jobPath = path.join(jobDir, `job-${stamp}.json`)
-      const logPath = path.join(metaDir, 'logs', `sync-${stamp}.log`)
+      const logPath = path.join(metaDir, 'logs', `download-${stamp}.log`)
       const job = {
         createdAt: new Date().toISOString(),
+        mode: 'download',
         appRoot: root,
         config,
         pid: process.pid,
@@ -330,11 +388,12 @@ export function apply(ctx, rawConfig) {
         })
         child.unref()
       } catch (error) {
-        return fail('guardian-spawn-failed', `起不了后台守护进程（${error instanceof Error ? error.message : String(error)}），请用「立即同步」`)
+        return fail('guardian-spawn-failed', `起不了后台进程（${error instanceof Error ? error.message : String(error)}）`)
       }
       await writeState({
         guardianPid: child.pid ?? null,
         phase: 'waiting-exit',
+        mode: 'download',
         jobPath,
         logPath,
         startedAt: new Date().toISOString(),
@@ -343,75 +402,8 @@ export function apply(ctx, rawConfig) {
         started: true,
         guardianPid: child.pid ?? null,
         logPath,
-        hint: '现在关闭 ElecKoi；守护进程会在退出后自动替换数据并重新拉起程序。',
+        hint: '现在完全退出 ElecKoi。它会先备份本机、再清空、然后把 FTP 的东西搬回来，最后自动重开。',
       })
-    },
-
-    /**
-     * 就地同步：不 spawn、不等退出，直接在宿主进程里搬文件。
-     *
-     * 桌面端优先用 start()（守护进程能在程序退出后干净替换，还能自动重开）。
-     * 这里这条是给「spawn 起不来」的环境兜底 —— 典型是 Android 独立 App：
-     * 换了数据库要等用户自己重开 App 才生效。
-     */
-    async sync(payload) {
-      const root = await ensureAppRoot()
-      const metaDir = metaDirOf(root)
-      if (!root || !metaDir) return fail('app-root-unknown', '找不到 ElecKoi 数据目录')
-      const config = await currentConfig()
-      if (!describeConfig(config, root).configured) return fail('not-configured', '还没填同步目标')
-      const state = await readState()
-      if (guardianAlive(state.guardianPid)) return fail('already-running', '已经有一个同步在等待 ElecKoi 退出')
-      /**
-       * 就地同步是单飞的，但锁不能是「一旦卡住就永远锁死」：
-       * 上一次如果因为网络挂死没返回，面板会一直报「上一次就地同步还没结束」，
-       * 用户除了杀进程没有别的出路。超过 10 分钟就当它已经死了，放行本次。
-       */
-      if (inlineRunning) {
-        const stuckFor = Date.now() - (inlineStartedAt ?? 0)
-        if (stuckFor < INLINE_LOCK_TIMEOUT_MS) {
-          return fail('already-running', `上一次就地同步还在跑（已 ${Math.round(stuckFor / 1000)} 秒），等一下再看`)
-        }
-        inlineRunning = false
-      }
-
-      const direction = payload?.direction === 'download' || payload?.direction === 'upload' ? payload.direction : 'both'
-      /**
-       * 强制下载：不看时间戳，远端有什么就盖什么。
-       *
-       * 「本机被同步换坏了」这种情况按时间比是没用的 —— 坏数据刚刚才写下去，
-       * mtime 比远端还新，正常比对会判成「本地较新，该上传」，正好把坏的推上去。
-       * 所以给一个明确的、只朝一个方向的覆盖开关。
-       */
-      const forceDownload = payload?.forceDownload === true
-      const stamp = Date.now()
-      const logPath = path.join(metaDir, 'logs', `inline-${stamp}.log`)
-      inlineRunning = true
-      inlineStartedAt = stamp
-      try {
-        const result = await applyInPlace({
-          appRoot: root,
-          config,
-          metaDir,
-          logPath,
-          deviceId: process.env.COMPUTERNAME ?? null,
-          direction,
-          forceDownload,
-          resetSessions: payload?.resetSessions === true,
-        })
-        const needsRestart = result.downloaded > 0
-        return ok({
-          ...result,
-          direction,
-          forceDownload,
-          needsRestart,
-          hint: needsRestart
-            ? '已把远端较新的数据换进本机。请完全退出并重新打开 ElecKoi（不是回到桌面，是从后台划掉），新数据才会被读到。'
-            : (result.error ? '同步失败，详见日志。' : '已经是最新的，不需要重启。'),
-        })
-      } finally {
-        inlineRunning = false
-      }
     },
 
     async cancel() {
@@ -483,9 +475,9 @@ export function apply(ctx, rawConfig) {
       const root = await ensureAppRoot()
       const metaDir = metaDirOf(root)
       if (!root || !metaDir) return fail('app-root-unknown', '找不到 ElecKoi 数据目录')
-      if (inlineRunning) return fail('already-running', '正在同步，等它结束再回滚')
+      if (inlineRunning) return fail('already-running', '正在上传，等它结束再回滚')
       const state = await readState()
-      if (guardianAlive(state.guardianPid)) return fail('already-running', '有一个同步在等 ElecKoi 退出，先取消它')
+      if (guardianAlive(state.guardianPid)) return fail('already-running', '有一个下载任务在等 ElecKoi 退出，先取消它')
       const layout = await resolveLayout(root)
       const stamp = Date.now()
       const logPath = path.join(metaDir, 'logs', `restore-${stamp}.log`)

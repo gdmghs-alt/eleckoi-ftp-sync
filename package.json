@@ -1,8 +1,8 @@
 {
   "name": "eleckoi-ftp-sync",
-  "version": "0.2.7",
+  "version": "0.3.0",
   "type": "module",
-  "description": "ElecKoi 数据 FTP 双向同步：按文件时间比对，关闭程序后自动应用并重启。",
+  "description": "ElecKoi 数据 FTP 镜像搬运：一个是把远端清空后整份上传，一个是把本机清空后整份下载（下载走守护进程，先备份再清）。",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
