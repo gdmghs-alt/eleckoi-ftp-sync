@@ -1,6 +1,6 @@
 {
   "name": "eleckoi-ftp-sync",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "type": "module",
   "description": "ElecKoi 数据 FTP 双向同步：按文件时间比对，关闭程序后自动应用并重启。",
   "exports": {
